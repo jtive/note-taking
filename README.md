@@ -435,6 +435,15 @@ consequences of choices rather than oversights.
   like any other, so a retry storm still costs roughly one write unit per
   refusal. Rejecting at the edge is cheaper, but the edge cannot do per-team
   accounting — which is exactly why both tiers exist.
+- **The per-IP tier on token exchange is softer than it looks.** Exercising the
+  live API from a single laptop produced requests from three different source
+  addresses within six minutes, because the egress NAT rotates. A caller whose
+  address moves gets a fresh 10-per-minute allowance each time it does, so this
+  tier slows credential stuffing from one host rather than bounding it. The
+  per-team limit is the real control, because the team comes from the token and
+  cannot be rotated by the caller. Bounding exchange attempts properly would
+  mean counting against the presented token's digest — including the ones that
+  fail, which is the case that matters.
 - **Validation errors do not quote the offending value.** Pydantic attaches the
   failing `input` to every error, and for a *missing* field that input is the
   entire request body — which on `POST /auth/token` contains a live API token.
