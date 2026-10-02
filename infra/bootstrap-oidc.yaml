@@ -261,10 +261,30 @@ Resources:
                   - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ResourcePrefix}-*"
                   - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/http-api/${ResourcePrefix}-*"
 
-              - Sid: InspectLogGroups
+              - Sid: ConfigureAccessLogDelivery
                 Effect: Allow
-                # DescribeLogGroups does not accept a resource scope.
-                Action: logs:DescribeLogGroups
+                # API Gateway does not write access logs itself; it registers a
+                # vended-log delivery with CloudWatch Logs, which is a separate
+                # action family from the log-group actions above. Omitting these
+                # fails the stage with "Insufficient permissions to enable
+                # logging" and rolls the whole stack back.
+                #
+                # None of the delivery actions support resource-level
+                # permissions, so "*" is forced rather than chosen. The blast
+                # radius is log-delivery configuration only - these actions
+                # cannot read a log event.
+                Action:
+                  - logs:CreateLogDelivery
+                  - logs:GetLogDelivery
+                  - logs:UpdateLogDelivery
+                  - logs:DeleteLogDelivery
+                  - logs:ListLogDeliveries
+                  # Delivery writes into the log group under a resource policy,
+                  # which API Gateway installs on our behalf.
+                  - logs:PutResourcePolicy
+                  - logs:DescribeResourcePolicies
+                  # Also does not accept a resource scope.
+                  - logs:DescribeLogGroups
                 Resource: "*"
 
 Outputs:
