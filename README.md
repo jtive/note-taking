@@ -10,9 +10,13 @@ is reachable from outside its team.
 
 | | |
 |---|---|
-| Live API | `https://<api-id>.execute-api.us-east-2.amazonaws.com` |
-| Interactive docs | `/docs` on that host |
+| Live API | <https://4viyyto7y7.execute-api.us-east-2.amazonaws.com> |
+| Interactive docs | <https://4viyyto7y7.execute-api.us-east-2.amazonaws.com/docs> |
+| Health check | <https://4viyyto7y7.execute-api.us-east-2.amazonaws.com/healthz> |
 | Tests | 137, 98% line and branch coverage |
+
+Team API tokens are supplied separately — they are not in this repository, and
+AWS holds only their SHA-256 digests.
 
 ---
 
@@ -36,7 +40,7 @@ is reachable from outside its team.
 Against the live API, using one of the four team tokens:
 
 ```bash
-API=https://<api-id>.execute-api.us-east-2.amazonaws.com
+API=https://4viyyto7y7.execute-api.us-east-2.amazonaws.com
 
 # 1. Trade the team's long-lived API token for a session token.
 TOKEN=$(curl -sS -X POST "$API/auth/token" \
