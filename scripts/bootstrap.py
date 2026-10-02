@@ -30,6 +30,8 @@ import json
 import secrets
 import subprocess
 import sys
+import urllib.request
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -53,8 +55,41 @@ TEAMS = ("acme", "globex", "initech", "umbrella")
 # how fast the comparison is.
 TEAM_TOKEN_BYTES = 32
 
+# GitHub switched the default OIDC subject format on this date. Repositories
+# created afterwards embed numeric owner and repository IDs in `sub`, so that a
+# deleted-and-recreated namespace cannot inherit the old subject. Getting this
+# wrong produces a bare "Not authorized to perform sts:AssumeRoleWithWebIdentity"
+# with no hint as to which claim mismatched, so it is worth deriving rather
+# than guessing.
+IMMUTABLE_SUBJECT_CUTOVER = datetime(2026, 7, 15, tzinfo=UTC)
 
-def deploy_bootstrap_stack(*, repository: str, branch: str, region: str) -> None:
+
+def subject_claim(*, repository: str, branch: str) -> str:
+    """Build the `sub` claim the deploy role should trust.
+
+    Reads the repository's creation date and numeric ids from the public
+    GitHub API to decide between the immutable and legacy subject formats.
+    A repository created before the cutover that has since *opted in* to
+    immutable claims will be misclassified here; pass --subject to override.
+    """
+    url = f"https://api.github.com/repos/{repository}"
+    request = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(request, timeout=20) as response:  # noqa: S310
+        metadata = json.loads(response.read())
+
+    owner = metadata["owner"]["login"]
+    name = metadata["name"]
+    created = datetime.fromisoformat(metadata["created_at"].replace("Z", "+00:00"))
+
+    if created < IMMUTABLE_SUBJECT_CUTOVER:
+        return f"repo:{owner}/{name}:ref:refs/heads/{branch}"
+
+    owner_id = metadata["owner"]["id"]
+    repository_id = metadata["id"]
+    return f"repo:{owner}@{owner_id}/{name}@{repository_id}:ref:refs/heads/{branch}"
+
+
+def deploy_bootstrap_stack(*, repository: str, branch: str, region: str, subject: str) -> None:
     print(f"Deploying {BOOTSTRAP_STACK} to {region}...")
     subprocess.run(
         [
@@ -75,6 +110,7 @@ def deploy_bootstrap_stack(*, repository: str, branch: str, region: str) -> None
             "--parameter-overrides",
             f"GitHubRepository={repository}",
             f"AllowedBranch={branch}",
+            f"SubjectClaim={subject}",
         ],
         check=True,
         shell=False,
@@ -157,12 +193,23 @@ def main() -> int:
     parser.add_argument("--branch", default="main")
     parser.add_argument("--region", default="us-east-2")
     parser.add_argument("--stage", default="prod")
+    parser.add_argument(
+        "--subject",
+        default=None,
+        help="Override the OIDC subject claim instead of deriving it from the GitHub API.",
+    )
     arguments = parser.parse_args()
+
+    subject = arguments.subject or subject_claim(
+        repository=arguments.repository, branch=arguments.branch
+    )
+    print(f"Trusting OIDC subject: {subject}")
 
     deploy_bootstrap_stack(
         repository=arguments.repository,
         branch=arguments.branch,
         region=arguments.region,
+        subject=subject,
     )
 
     outputs = stack_outputs(region=arguments.region)

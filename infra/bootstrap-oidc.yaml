@@ -16,6 +16,21 @@ Parameters:
     Default: main
     Description: Only this branch of that repository may deploy.
 
+  SubjectClaim:
+    Type: String
+    Description: >
+      The exact `sub` claim the role will accept, computed by
+      scripts/bootstrap.py. It is a parameter rather than built here because
+      GitHub has two subject formats and the correct one depends on when the
+      repository was created. Repositories created after 2026-07-15 use an
+      immutable format embedding numeric owner and repository IDs, so that a
+      recycled namespace cannot resurrect someone else's subject:
+        repo:owner@1234/repo@5678:ref:refs/heads/main
+      Older repositories that have not opted in use the original name-based
+      form:
+        repo:owner/repo:ref:refs/heads/main
+      CloudFormation cannot look the IDs up, so the script does.
+
   ResourcePrefix:
     Type: String
     Default: note-taking
@@ -84,10 +99,19 @@ Resources:
               # Both conditions matter. Without the audience check the role
               # would accept tokens minted for other relying parties; without
               # the subject check *any* repository on GitHub could assume it.
+              #
+              # StringEquals rather than StringLike: the subject is known
+              # exactly, so there is no reason to admit a wildcard. A stray `*`
+              # in a subject pattern is a well-known way to accidentally trust
+              # every branch, or every repository, on GitHub.
+              #
+              # Note that a job declaring `environment:` gets a *different*
+              # subject (`...:environment:NAME` instead of `...:ref:refs/...`),
+              # so adding an environment to the deploy workflow means
+              # re-running the bootstrap script with a matching subject.
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-              StringLike:
-                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubRepository}:ref:refs/heads/${AllowedBranch}"
+                token.actions.githubusercontent.com:sub: !Ref SubjectClaim
       Policies:
         - PolicyName: deploy-the-application-stack
           PolicyDocument:

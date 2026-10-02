@@ -34,9 +34,11 @@ jobs:
     name: Build and deploy
     needs: checks
     runs-on: ubuntu-latest
-    # Point a GitHub environment at this name to add a required reviewer or
-    # restrict which branches may deploy.
-    environment: prod
+    # Deliberately no `environment:`. Declaring one rewrites the OIDC token's
+    # subject from `...:ref:refs/heads/main` to `...:environment:NAME`, which
+    # silently stops matching the deploy role's trust policy. Adding a GitHub
+    # environment for required reviewers is worth doing, but it means
+    # re-running scripts/bootstrap.py with the environment subject.
     outputs:
       api-url: ${{ steps.outputs.outputs.api-url }}
     steps:
