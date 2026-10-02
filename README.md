@@ -23,10 +23,6 @@ Optimizing this workflow could have reclaimed approximately 30–45 minutes, ena
 ### Reviewer Testing Notes
 - If you hammer this API too hard, there is an API gateway kill switch. I need to to save money. But if you trigger the kill switch I can redeploy the API for more testing just send me an email. 
 
-### Beneath this line is all AI generated Readme code. Above this line is all the developer notes.
-
----
-
 ## Future Roadmap & Architecture Enhancements
 
 Given additional time, the following improvements would be prioritized:
@@ -45,12 +41,10 @@ Given additional time, the following improvements would be prioritized:
 ### 4. Threading & Associative Notes
 - Evolve the flat note schema into a hierarchical/threaded model, enabling users to nest discussions, cross-reference entries, and associate notes across teams.
 
-### 4. Reviewer Testing Notes
-- If you hammer this API too hard, there is an API gateway kill switch. I need to to save money. But if you trigger the 
-kill switch I can redeploy the API for more testing just send me an email. 
-
 ### Beneath this line is all AI generated Readme code. Above this line is all the developer notes.
-_______________________________________________________________________________
+- Below this line should really be a result of what Opus and I decided as we designed and pair coded.
+
+---
 
 A REST service for small teams to capture and work with shared notes. Python,
 FastAPI, DynamoDB, running on Lambda behind an API Gateway HTTP API, deployed
@@ -238,8 +232,8 @@ single-client editor.
 Every response carries the current allowance:
 
 ```
-X-RateLimit-Limit: 100
-X-RateLimit-Remaining: 97
+X-RateLimit-Limit: 25
+X-RateLimit-Remaining: 23
 X-RateLimit-Reset: 1790000160
 ```
 
@@ -248,7 +242,7 @@ different things:
 
 | Tier | Limit | Keyed on | Enforced by |
 |---|---|---|---|
-| Authenticated API | 100 / minute | team | DynamoDB counter |
+| Authenticated API | 25 / minute | team | DynamoDB counter |
 | Token exchange | 10 / minute | source address | DynamoDB counter |
 | Whole API | 25 / second, burst 50 | nothing | API Gateway |
 
