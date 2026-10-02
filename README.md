@@ -1,5 +1,44 @@
 # Notes API
 
+Developer only notes - 
+
+Retrospective & Tooling Choices
+In hindsight, sticking with Claude Opus throughout the assessment was a bottleneck. While I typically leverage Opus for high-level system design and architecture in my day-to-day work, its latency is ill-suited for a strict 3-hour constraint.
+
+A more effective model-routing strategy for this challenge would have been:
+
+Sonnet for initial planning and system architecture.
+
+Haiku for boilerplate, unit tests, and end-to-end scaffolding.
+
+Adopting that split likely would have shaved 30–45 minutes off implementation, allowing for a cleaner distribution of time:
+
+1 hour: Planning & core development
+
+1 hour: Hardening, edge cases & comprehensive testing
+
+30 minutes: Documentation & targeted code review
+
+Opus also introduced friction during deployment and infrastructure setup—it overcomplicated the deployment architecture and introduced duplicate runs in the GitHub Actions workflows. Given the hard stop at 3 hours, my priority shifted from line-by-line stylistic audits to verifying core functionality, security, and stability.
+
+Next Steps & Future Enhancements
+If allocated additional time, I would prioritize the following architectural improvements:
+
+Frontend Test Harness: Build a lightweight React UI for rapid, targeted end-to-end verification beyond automated integration tests.
+
+Auth & Multi-Tenancy Scoping: Decouple authentication from static team structures to support per-user identities, dynamic team memberships, and cross-team read/write scopes.
+
+Database Re-architecture: The current relational requirements (cross-team permissions, note associations, threading) push against the strengths of a document/NoSQL store. I would migrate this to a structured PostgreSQL schema to simplify relational querying, data integrity, and indexing.
+
+Threaded Associations: Evolve the core note model into a threaded/hierarchical pattern, allowing users to link notes directly to existing discussions or cross-functional records.
+
+If you hammer this API too hard, there is an API gateway kill switch. I need to to save money. But if you trigger the 
+kill switch I can redeploy the API for more testing just send me an email. 
+
+Beneath this line is all AI generated Readme code. Above this line is all 
+the developer notes.
+_______________________________________________________________________________
+
 A REST service for small teams to capture and work with shared notes. Python,
 FastAPI, DynamoDB, running on Lambda behind an API Gateway HTTP API, deployed
 only by GitHub Actions.
