@@ -55,13 +55,22 @@ class TestCreate:
 
         assert response.status_code == 422
 
-    def test_note_beyond_the_length_limit_is_rejected(self, make_client: Any, sign_in: Any) -> None:
+    def test_the_length_limit_is_inclusive(self, make_client: Any, sign_in: Any) -> None:
+        """Both sides of the boundary, because `>` versus `>=` is a coin toss.
+
+        A note of exactly the configured length is allowed; one character more
+        is refused. Asserting only the rejection would leave the limit's
+        meaning ambiguous and an off-by-one free to change it.
+        """
         client = make_client(NOTES_MAX_NOTE_LENGTH=10)
         alice = sign_in(client, "alice", "acme")
 
-        response = client.post("/notes", json={"note": "x" * 11}, headers=alice.headers)
+        at_limit = client.post("/notes", json={"note": "x" * 10}, headers=alice.headers)
+        over_limit = client.post("/notes", json={"note": "x" * 11}, headers=alice.headers)
 
-        assert response.status_code == 422
+        assert at_limit.status_code == 201, at_limit.text
+        assert at_limit.json()["note"] == "x" * 10
+        assert over_limit.status_code == 422
 
     def test_creating_requires_authentication(self, client: TestClient) -> None:
         response = client.post("/notes", json={"note": "Anything."})
