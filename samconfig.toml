@@ -24,7 +24,14 @@ capabilities = "CAPABILITY_IAM"
 confirm_changeset = false
 # A deploy with no changes is a successful no-op, not a failed pipeline.
 fail_on_empty_changeset = false
-parameter_overrides = "Stage=prod"
+# Sent on every deploy, and that is the point. `sam deploy` passes
+# UsePreviousValue for any parameter already on the stack that is not listed
+# here, so editing a Default in template.yaml changes nothing for a stack that
+# already exists - it only affects a first create. Combined with
+# fail_on_empty_changeset = false, that turns a parameter change into a deploy
+# that reports success and does nothing. Anything whose value matters in
+# production is therefore pinned here rather than left to a default.
+parameter_overrides = "Stage=prod ApiThrottleRateLimit=25 ApiThrottleBurstLimit=50"
 tags = "Application=note-taking Stage=prod"
 
 [default.validate.parameters]
