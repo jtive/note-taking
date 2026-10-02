@@ -191,10 +191,31 @@ X-RateLimit-Remaining: 97
 X-RateLimit-Reset: 1790000160
 ```
 
-A refusal is a `429` with `Retry-After`. Two tiers: **100 requests per minute
-per team** on the authenticated surface, and **10 per minute per source address**
-on `POST /auth/token`, where the threat is someone guessing an API token rather
-than a runaway client.
+A refusal is a `429` with `Retry-After`. There are three tiers, and they guard
+different things:
+
+| Tier | Limit | Keyed on | Enforced by |
+|---|---|---|---|
+| Authenticated API | 100 / minute | team | DynamoDB counter |
+| Token exchange | 10 / minute | source address | DynamoDB counter |
+| Whole API | 25 / second, burst 50 | nothing | API Gateway |
+
+The first two are the application's, and they return problem documents. The
+third is a backstop at the edge that applies even to traffic with no
+credentials, which is the only limit that still holds if the application
+itself misbehaves — and, because it rejects before Lambda and DynamoDB are
+touched, the only one that bounds what the service can be made to cost.
+
+It is deliberately set from demand rather than guessed: four teams at 100 per
+minute is about 6.7 requests per second in aggregate, so 25 leaves roughly
+3.5× headroom. **If you want to load test, raise `ApiThrottleRateLimit`
+first** — it is a template parameter, so no code change is needed.
+
+One honest wrinkle: a rejection from that third tier comes from API Gateway
+rather than from this service, so it is a bare `{"message":"Too Many
+Requests"}` instead of a problem document. It is the single place the error
+contract is not honoured, and it is the price of having a backstop that works
+even when none of our code runs.
 
 ### Status codes
 
@@ -406,6 +427,14 @@ consequences of choices rather than oversights.
   bootstrap script. A real service needs a provisioning API.
 - **CORS is permissive** so the live URL can be poked at from anywhere.
   `template.yaml` flags the line to pin before this served a browser app.
+- **The edge throttle's 429 is not a problem document**, as described under
+  [rate limits](#rate-limits). Making it one would mean a Gateway response
+  template, which is more coupling to API Gateway than it is worth here.
+- **A rejected request is not free.** The application limiter refuses by
+  failing a conditional write, and DynamoDB bills a failed conditional write
+  like any other, so a retry storm still costs roughly one write unit per
+  refusal. Rejecting at the edge is cheaper, but the edge cannot do per-team
+  accounting — which is exactly why both tiers exist.
 - **One partition per team** — see the ceiling discussed above.
 
 ---

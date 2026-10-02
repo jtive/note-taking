@@ -40,15 +40,31 @@ Parameters:
 
   ApiThrottleRateLimit:
     Type: Number
-    Default: 200
+    Default: 25
     Description: >
-      Steady-state requests per second across the whole API. A coarse backstop
-      beneath the per-user limiter, which still holds if the limiter itself is
-      saturated or if traffic arrives with no credentials at all.
+      Steady-state requests per second across the whole API, rejected at the
+      edge before reaching Lambda or DynamoDB. This is the only limit that
+      applies to traffic arriving with no credentials at all, so it is also the
+      ceiling on what the service can be made to cost.
+
+      Derived from demand rather than picked: four teams at RateLimitRequests
+      per RateLimitWindowSeconds is 400 requests per minute, or about 6.7 per
+      second in aggregate. 25 leaves roughly 3.5x headroom for bursts while
+      capping the worst case near 2.2M requests per day.
+
+      Raise it before any real load test. Note that a rejection here comes from
+      API Gateway, not the application, so it is a bare {"message":"Too Many
+      Requests"} rather than one of our problem+json documents - the only place
+      the error contract is not honoured, and the cost of having a backstop
+      that works even when the application never runs.
 
   ApiThrottleBurstLimit:
     Type: Number
-    Default: 400
+    Default: 50
+    Description: >
+      Bucket depth for momentary spikes. Two seconds of the steady rate, which
+      absorbs a handful of parallel clients without letting a sustained flood
+      through.
 
   LogRetentionInDays:
     Type: Number
