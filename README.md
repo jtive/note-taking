@@ -19,6 +19,12 @@ Optimizing this workflow could have reclaimed approximately 30–45 minutes, ena
 - **CI/CD Simplification:** Opus introduced unnecessary complexity into the deployment configuration, creating redundant triggers in GitHub Actions and overly expansive infra definitions. Given the hard time limit, priority was placed on verifying core functionality, reliability, and security over auditing every generated automation artifact.
 - **Verification vs. Polish:** Under a normal delivery cycle, every line of generated code and documentation undergoes a deep manual pass. Here, effort was concentrated on ensuring working end-to-end functionality within the allotted window.
 
+If you hammer this API too hard, there is an API gateway kill switch. I need to to save money. But if you trigger the 
+kill switch I can redeploy the API for more testing just send me an email. 
+
+Beneath this line is all AI generated Readme code. Above this line is all 
+the developer notes.
+
 ---
 
 ## Future Roadmap & Architecture Enhancements
