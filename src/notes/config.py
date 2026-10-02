@@ -15,7 +15,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="NOTES_", env_file=".env", extra="ignore")
 
-    table_name: str = Field(description="DynamoDB table holding users, teams, notes and counters.")
+    table_name: str = Field(description="DynamoDB table holding notes and rate-limit counters.")
 
     # Exactly one of these supplies the JWT signing key. In AWS the Lambda reads
     # jwt_secret_param from SSM at cold start; jwt_secret is the escape hatch for

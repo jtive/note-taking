@@ -1,10 +1,8 @@
 # DynamoDB Local for running and testing the API without touching AWS.
 #
+#   cp .env.example .env
 #   docker compose up -d
 #   python scripts/create_local_table.py
-#   NOTES_DYNAMODB_ENDPOINT_URL=http://localhost:8000 \
-#   NOTES_TABLE_NAME=note-taking-local \
-#   NOTES_JWT_SECRET=local-dev-secret-not-for-production \
 #   uvicorn notes.main:app --reload --app-dir src
 
 services:
