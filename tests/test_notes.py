@@ -24,7 +24,7 @@ class TestCreate:
         assert response.status_code == 201
         body = response.json()
         assert body["note"] == "Ship the rate limiter."
-        assert body["user"] == alice.email
+        assert body["user"] == alice.member
         assert body["team"] == "acme"
         assert body["version"] == 1
         assert body["date"] == body["updated_at"]
@@ -55,11 +55,9 @@ class TestCreate:
 
         assert response.status_code == 422
 
-    def test_note_beyond_the_length_limit_is_rejected(
-        self, make_client: Any, register: Any
-    ) -> None:
+    def test_note_beyond_the_length_limit_is_rejected(self, make_client: Any, sign_in: Any) -> None:
         client = make_client(NOTES_MAX_NOTE_LENGTH=10)
-        alice = register(client, "alice@acme.example", "acme")
+        alice = sign_in(client, "alice", "acme")
 
         response = client.post("/notes", json={"note": "x" * 11}, headers=alice.headers)
 
@@ -117,7 +115,7 @@ class TestList:
         response = client.get("/notes", headers=alice.headers)
 
         authors = {item["user"] for item in response.json()["items"]}
-        assert authors == {alice.email, bob.email}
+        assert authors == {alice.member, bob.member}
 
     def test_empty_team_returns_an_empty_page(self, client: TestClient, alice: Actor) -> None:
         response = client.get("/notes", headers=alice.headers)
@@ -141,10 +139,10 @@ class TestList:
         assert cursor is None
         assert collected == expected
 
-    def test_page_size_is_capped(self, make_client: Any, register: Any) -> None:
+    def test_page_size_is_capped(self, make_client: Any, sign_in: Any) -> None:
         """An oversized `limit` is clamped rather than rejected."""
         client = make_client(NOTES_MAX_PAGE_SIZE=2)
-        alice = register(client, "alice@acme.example", "acme")
+        alice = sign_in(client, "alice", "acme")
         for index in range(5):
             create_note(client, alice, f"note {index}")
 

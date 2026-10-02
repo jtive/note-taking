@@ -6,6 +6,8 @@ recoverable; leaking one team's notes into another team is not.
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi.testclient import TestClient
 
 from tests.conftest import Actor
@@ -126,3 +128,28 @@ class TestAuthorOnlyMutation:
             == 200
         )
         assert client.delete(f"/notes/{note['id']}", headers=bob.headers).status_code == 204
+
+    def test_the_author_check_is_not_a_security_boundary(
+        self, client: TestClient, sign_in: Any, alice: Actor
+    ) -> None:
+        """Asserted on purpose, because it follows from a shared team credential.
+
+        A team's members share one API token, so whoever holds it can exchange
+        it for a session attributed to any name - including a teammate's. The
+        author check therefore prevents accidents, not a deliberate edit by
+        someone already inside the team. Closing this needs per-member
+        credentials, not a stricter condition expression.
+
+        Cross-team isolation is unaffected: the team claim comes from the
+        token, never from the request.
+        """
+        note = create_note(client, alice, "alice's wording")
+        impersonating_alice = sign_in(client, alice.member, "acme")
+
+        response = client.patch(
+            f"/notes/{note['id']}",
+            json={"note": "edited by someone claiming to be alice"},
+            headers=impersonating_alice.headers,
+        )
+
+        assert response.status_code == 200

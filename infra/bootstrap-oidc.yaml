@@ -1,0 +1,256 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  One-time setup for CI: GitHub OIDC trust, an artifact bucket, and a deploy
+  role scoped to this repository. Deployed once by a human, then never again -
+  the application stack is deployed by the role this creates.
+
+Parameters:
+  GitHubRepository:
+    Type: String
+    Default: jtive/note-taking
+    AllowedPattern: "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+    Description: owner/repo allowed to assume the deploy role. Nothing else can.
+
+  AllowedBranch:
+    Type: String
+    Default: main
+    Description: Only this branch of that repository may deploy.
+
+  ResourcePrefix:
+    Type: String
+    Default: note-taking
+    Description: Prefix the deploy role is confined to managing.
+
+Resources:
+  # Establishes that tokens signed by GitHub's OIDC issuer may be exchanged for
+  # AWS credentials. On its own this grants nothing; the role's trust policy
+  # below is what decides who gets what.
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      # AWS validates this issuer against its own trust store and no longer
+      # relies on the thumbprint, but the API still requires the field. These
+      # are GitHub's published values.
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+        - 1c58a3a8518e8759bf075b76b750d4f2df264fcd
+
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    # Retained so a bootstrap teardown cannot silently delete deploy history.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "${ResourcePrefix}-sam-artifacts-${AWS::AccountId}-${AWS::Region}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          # Build artifacts are disposable once deployed; without this the
+          # bucket grows by the size of the dependency tree on every push.
+          - Id: expire-superseded-artifacts
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 7
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ResourcePrefix}-github-deploy"
+      Description: !Sub "Assumed by GitHub Actions in ${GitHubRepository} to deploy the notes API."
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubOidcProvider
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              # Both conditions matter. Without the audience check the role
+              # would accept tokens minted for other relying parties; without
+              # the subject check *any* repository on GitHub could assume it.
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubRepository}:ref:refs/heads/${AllowedBranch}"
+      Policies:
+        - PolicyName: deploy-the-application-stack
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ManageOurStacksOnly
+                Effect: Allow
+                Action:
+                  - cloudformation:CreateStack
+                  - cloudformation:UpdateStack
+                  - cloudformation:DeleteStack
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:DescribeStackResource
+                  - cloudformation:DescribeStackResources
+                  - cloudformation:ListStackResources
+                  - cloudformation:GetTemplate
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:ListChangeSets
+                  - cloudformation:TagResource
+                  - cloudformation:UntagResource
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${ResourcePrefix}-*/*"
+
+              - Sid: ExpandTheServerlessTransform
+                Effect: Allow
+                Action: cloudformation:CreateChangeSet
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:aws:transform/Serverless-2016-10-31"
+
+              - Sid: TemplateInspection
+                Effect: Allow
+                # Neither action accepts a resource scope.
+                Action:
+                  - cloudformation:ValidateTemplate
+                  - cloudformation:GetTemplateSummary
+                Resource: "*"
+
+              - Sid: UploadBuildArtifacts
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:ListBucket
+                  - s3:GetBucketLocation
+                Resource:
+                  - !GetAtt ArtifactBucket.Arn
+                  - !Sub "${ArtifactBucket.Arn}/*"
+
+              - Sid: ManageTheFunction
+                Effect: Allow
+                Action:
+                  - lambda:CreateFunction
+                  - lambda:DeleteFunction
+                  - lambda:GetFunction
+                  - lambda:GetFunctionConfiguration
+                  - lambda:UpdateFunctionCode
+                  - lambda:UpdateFunctionConfiguration
+                  - lambda:AddPermission
+                  - lambda:RemovePermission
+                  - lambda:GetPolicy
+                  - lambda:ListTags
+                  - lambda:TagResource
+                  - lambda:UntagResource
+                  - lambda:ListVersionsByFunction
+                  - lambda:PublishVersion
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${ResourcePrefix}-*"
+
+              - Sid: ManageTheTableButNotItsContents
+                Effect: Allow
+                # Control plane only. The deploy role can create, configure and
+                # delete the table; it deliberately cannot GetItem, Query or
+                # Scan, so a compromised CI token cannot read anyone's notes.
+                Action:
+                  - dynamodb:CreateTable
+                  - dynamodb:DeleteTable
+                  - dynamodb:DescribeTable
+                  - dynamodb:UpdateTable
+                  - dynamodb:DescribeTimeToLive
+                  - dynamodb:UpdateTimeToLive
+                  - dynamodb:DescribeContinuousBackups
+                  - dynamodb:UpdateContinuousBackups
+                  - dynamodb:ListTagsOfResource
+                  - dynamodb:TagResource
+                  - dynamodb:UntagResource
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ResourcePrefix}-*"
+
+              - Sid: ManageTheFunctionExecutionRole
+                Effect: Allow
+                # CloudFormation generates the execution role's name from the
+                # stack name, so it can only be scoped by prefix, not named
+                # exactly. PassRole is what lets CloudFormation attach it to
+                # the function.
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:GetRole
+                  - iam:PassRole
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                  - iam:TagRole
+                  - iam:UntagRole
+                  - iam:UpdateAssumeRolePolicy
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${ResourcePrefix}-*"
+
+              - Sid: ManageTheHttpApi
+                Effect: Allow
+                # API Gateway ARNs identify resources by generated id rather
+                # than by name, so there is no prefix to scope to. This is the
+                # loosest statement in the policy and the one to revisit first.
+                Action:
+                  - apigateway:POST
+                  - apigateway:GET
+                  - apigateway:PATCH
+                  - apigateway:PUT
+                  - apigateway:DELETE
+                  - apigateway:TagResource
+                  - apigateway:UntagResource
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}::/apis"
+                  - !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}::/apis/*"
+                  - !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}::/tags/*"
+
+              - Sid: ManageOurLogGroups
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:DeleteLogGroup
+                  - logs:PutRetentionPolicy
+                  - logs:DeleteRetentionPolicy
+                  - logs:TagResource
+                  - logs:UntagResource
+                  - logs:ListTagsForResource
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ResourcePrefix}-*"
+                  - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/http-api/${ResourcePrefix}-*"
+
+              - Sid: InspectLogGroups
+                Effect: Allow
+                # DescribeLogGroups does not accept a resource scope.
+                Action: logs:DescribeLogGroups
+                Resource: "*"
+
+Outputs:
+  DeployRoleArn:
+    Description: Set as the AWS_DEPLOY_ROLE_ARN secret in GitHub.
+    Value: !GetAtt DeployRole.Arn
+
+  ArtifactBucketName:
+    Description: Passed to sam deploy as --s3-bucket.
+    Value: !Ref ArtifactBucket
+
+  OidcProviderArn:
+    Value: !Ref GitHubOidcProvider

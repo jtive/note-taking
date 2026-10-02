@@ -1,0 +1,248 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Team-scoped note-taking API: one Lambda behind an HTTP API, backed by a
+  single DynamoDB table.
+
+Parameters:
+  Stage:
+    Type: String
+    Default: prod
+    AllowedPattern: "^[a-z0-9][a-z0-9-]*$"
+    Description: Environment suffix for resource names. Deploy more than one from this template.
+
+  LogLevel:
+    Type: String
+    Default: INFO
+    AllowedValues: [DEBUG, INFO, WARNING, ERROR]
+
+  RateLimitRequests:
+    Type: Number
+    Default: 100
+    MinValue: 1
+    Description: Requests per window per authenticated user.
+
+  RateLimitWindowSeconds:
+    Type: Number
+    Default: 60
+    MinValue: 1
+
+  AuthRateLimitRequests:
+    Type: Number
+    Default: 10
+    MinValue: 1
+    Description: Registration and token attempts per window per source address.
+
+  AuthRateLimitWindowSeconds:
+    Type: Number
+    Default: 60
+    MinValue: 1
+
+  ApiThrottleRateLimit:
+    Type: Number
+    Default: 200
+    Description: >
+      Steady-state requests per second across the whole API. A coarse backstop
+      beneath the per-user limiter, which still holds if the limiter itself is
+      saturated or if traffic arrives with no credentials at all.
+
+  ApiThrottleBurstLimit:
+    Type: Number
+    Default: 400
+
+  LogRetentionInDays:
+    Type: Number
+    Default: 14
+    Description: Logs default to never expiring, which quietly accrues cost forever.
+
+Globals:
+  Function:
+    Runtime: python3.14
+    Architectures: [x86_64]
+    MemorySize: 512
+    # Generous for a DynamoDB round trip, but a cold start also pays for the
+    # import graph and two SSM reads before it serves the first request.
+    Timeout: 10
+
+Resources:
+  # ---------------------------------------------------------------- storage
+
+  NotesTable:
+    Type: AWS::DynamoDB::Table
+    # Delete, so a reviewer can tear the stack down cleanly and redeploy under
+    # the same table name. A production stack wants Retain plus a generated
+    # physical name, so a stack replacement cannot destroy the data.
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      TableName: !Sub "note-taking-${Stage}"
+      # Traffic here is unknown and spiky, so paying per request beats
+      # guessing a provisioned capacity that is either wasteful or throttling.
+      BillingMode: PAY_PER_REQUEST
+      # Only the key attributes are declared: the rest of the item is
+      # schemaless, and with no secondary indexes nothing else needs typing.
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      # Reaps expired rate-limit counters. Without it they accumulate forever,
+      # since nothing in the application deletes them.
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Application
+          Value: note-taking
+        - Key: Stage
+          Value: !Ref Stage
+
+  # ------------------------------------------------------------------- api
+
+  NotesApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      # The $default stage serves at the root of the endpoint, so paths need no
+      # stage prefix and the application needs no root_path.
+      StageName: $default
+      DefaultRouteSettings:
+        ThrottlingRateLimit: !Ref ApiThrottleRateLimit
+        ThrottlingBurstLimit: !Ref ApiThrottleBurstLimit
+      AccessLogSettings:
+        DestinationArn: !GetAtt ApiAccessLogGroup.Arn
+        Format: >-
+          {"requestId":"$context.requestId","ip":"$context.identity.sourceIp","method":"$context.httpMethod","path":"$context.path","status":"$context.status","latency":"$context.responseLatency","userAgent":"$context.identity.userAgent"}
+      CorsConfiguration:
+        # Permissive so the API can be driven from a browser or Swagger UI
+        # during review. Credentials are sent in the Authorization header
+        # rather than cookies, so there is no ambient-authority risk here, but
+        # a real deployment should pin AllowOrigins to known front ends.
+        AllowOrigins: ["*"]
+        AllowHeaders: ["authorization", "content-type", "if-match", "x-request-id"]
+        AllowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"]
+        ExposeHeaders:
+          - etag
+          - location
+          - retry-after
+          - x-request-id
+          - x-ratelimit-limit
+          - x-ratelimit-remaining
+          - x-ratelimit-reset
+
+  ApiAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/http-api/note-taking-${Stage}"
+      RetentionInDays: !Ref LogRetentionInDays
+
+  # -------------------------------------------------------------- function
+
+  NotesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "note-taking-api-${Stage}"
+      Description: Every route for the notes API.
+      CodeUri: src/
+      Handler: notes.handler.lambda_handler
+      Environment:
+        Variables:
+          NOTES_TABLE_NAME: !Ref NotesTable
+          NOTES_JWT_SECRET_PARAM: !Sub "/note-taking/${Stage}/jwt-signing-key"
+          NOTES_TEAM_TOKENS_PARAM: !Sub "/note-taking/${Stage}/team-tokens"
+          NOTES_LOG_LEVEL: !Ref LogLevel
+          NOTES_RATE_LIMIT_REQUESTS: !Ref RateLimitRequests
+          NOTES_RATE_LIMIT_WINDOW_SECONDS: !Ref RateLimitWindowSeconds
+          NOTES_AUTH_RATE_LIMIT_REQUESTS: !Ref AuthRateLimitRequests
+          NOTES_AUTH_RATE_LIMIT_WINDOW_SECONDS: !Ref AuthRateLimitWindowSeconds
+      Policies:
+        # Written out rather than using SAM's DynamoDBCrudPolicy, which also
+        # grants Scan, BatchGetItem and BatchWriteItem and covers every index.
+        # These five actions are exactly what repository.py calls.
+        - Statement:
+            - Sid: NotesTableAccess
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+                - dynamodb:Query
+              Resource: !GetAtt NotesTable.Arn
+        - Statement:
+            - Sid: ReadOurSecrets
+              Effect: Allow
+              # Read-only, and only these two parameters. Both are created out
+              # of band by scripts/bootstrap.py, because CloudFormation cannot
+              # create SecureString parameters - which conveniently also keeps
+              # the plaintext out of stack events and templates.
+              Action: ssm:GetParameter
+              Resource:
+                - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/note-taking/${Stage}/jwt-signing-key"
+                - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/note-taking/${Stage}/team-tokens"
+            - Sid: DecryptOurSecrets
+              Effect: Allow
+              # The AWS-managed aws/ssm key has an account-specific ARN that is
+              # not knowable at template time, so the grant is scoped by the
+              # service that may use it instead.
+              Action: kms:Decrypt
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  kms:ViaService: !Sub "ssm.${AWS::Region}.amazonaws.com"
+      Events:
+        Root:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref NotesApi
+            Path: /
+            Method: ANY
+        Proxy:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref NotesApi
+            # One greedy route: FastAPI owns routing and returns its own 404
+            # and 405 problem documents, so API Gateway does not need a route
+            # per endpoint that would have to be kept in step with the code.
+            Path: /{proxy+}
+            Method: ANY
+      Tags:
+        Application: note-taking
+        Stage: !Ref Stage
+
+  NotesFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/note-taking-api-${Stage}"
+      RetentionInDays: !Ref LogRetentionInDays
+
+Outputs:
+  ApiUrl:
+    Description: Base URL of the API.
+    Value: !Sub "https://${NotesApi}.execute-api.${AWS::Region}.amazonaws.com"
+    Export:
+      Name: !Sub "note-taking-${Stage}-api-url"
+
+  TableName:
+    Description: DynamoDB table backing the service.
+    Value: !Ref NotesTable
+
+  FunctionName:
+    Description: Lambda function serving the API.
+    Value: !Ref NotesFunction
+
+  SigningKeyParameter:
+    Description: SSM parameter the function reads its JWT signing key from.
+    Value: !Sub "/note-taking/${Stage}/jwt-signing-key"
+
+  TeamTokensParameter:
+    Description: SSM parameter holding the hashed team API token registry.
+    Value: !Sub "/note-taking/${Stage}/team-tokens"

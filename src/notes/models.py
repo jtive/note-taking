@@ -1,9 +1,9 @@
 """Request and response schemas.
 
-The note representation uses the field names from the brief - user, team, date,
-note - rather than renaming them to internal vocabulary, plus the two things
-any REST resource needs: a stable `id` and an `updated_at` to tell a read-back
-from a modification.
+The note representation keeps the field names from the brief - user, team,
+date, note - rather than renaming them to internal vocabulary, plus the two
+things any REST resource needs: a stable `id` and an `updated_at` to tell a
+read-back from a modification.
 """
 
 from __future__ import annotations
@@ -11,9 +11,14 @@ from __future__ import annotations
 import re
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, SecretStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 from notes.config import get_settings
+
+#: Deliberately permissive: a member name is a label for attribution, so an
+#: email address, a handle and a display name are all reasonable. Control
+#: characters and leading punctuation are not.
+MEMBER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@+\- ]*$")
 
 TEAM_ID_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
 
@@ -22,76 +27,70 @@ TeamId = Annotated[
     Field(
         min_length=1,
         max_length=64,
-        description="Lowercase slug identifying the team, for example 'acme-research'.",
-        examples=["acme-research"],
+        description="Slug identifying the team the credential belongs to.",
+        examples=["acme"],
     ),
 ]
 
-
-def _normalise_team_id(value: str) -> str:
-    candidate = value.strip().lower()
-    if not TEAM_ID_PATTERN.match(candidate):
-        raise ValueError(
-            "Team must contain only lowercase letters, digits and hyphens, "
-            "and may not start or end with a hyphen."
-        )
-    return candidate
+MemberName = Annotated[
+    str,
+    Field(
+        min_length=1,
+        max_length=64,
+        description="Who to attribute notes to. Not independently authenticated; "
+        "the team's API token is the credential.",
+        examples=["alice"],
+    ),
+]
 
 
 class _Base(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class RegisterRequest(_Base):
-    email: EmailStr = Field(examples=["alice@acme.example"])
-    password: SecretStr = Field(examples=["correct-horse-battery"])
-    team: TeamId
-
-    @field_validator("email")
-    @classmethod
-    def _lowercase_email(cls, value: str) -> str:
-        return value.strip().lower()
-
-    @field_validator("team")
-    @classmethod
-    def _check_team(cls, value: str) -> str:
-        return _normalise_team_id(value)
-
-    @field_validator("password")
-    @classmethod
-    def _check_password_length(cls, value: SecretStr) -> SecretStr:
-        minimum = get_settings().min_password_length
-        if len(value.get_secret_value()) < minimum:
-            raise ValueError(f"Password must be at least {minimum} characters.")
-        return value
+def _validate_member(value: str) -> str:
+    member = " ".join(value.split())
+    limit = get_settings().max_member_name_length
+    if not member:
+        raise ValueError("Member name cannot be empty or whitespace only.")
+    if len(member) > limit:
+        raise ValueError(f"Member name cannot exceed {limit} characters.")
+    if not MEMBER_PATTERN.match(member):
+        raise ValueError(
+            "Member name must start with a letter or digit and may contain only "
+            "letters, digits, spaces and the characters . _ @ + -"
+        )
+    return member
 
 
 class TokenRequest(_Base):
-    email: EmailStr = Field(examples=["alice@acme.example"])
-    password: SecretStr
+    """Exchange a team's long-lived API token for a short-lived session token."""
 
-    @field_validator("email")
+    api_token: SecretStr = Field(
+        description="The team's API token, as issued by scripts/bootstrap.py.",
+        examples=["nt_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"],
+    )
+    member: MemberName
+
+    @field_validator("member")
     @classmethod
-    def _lowercase_email(cls, value: str) -> str:
-        return value.strip().lower()
+    def _check_member(cls, value: str) -> str:
+        return _validate_member(value)
 
 
 class TokenResponse(_Base):
     access_token: str
     token_type: str = "bearer"  # noqa: S105  # OAuth 2.0 token type, not a credential
     expires_in: int = Field(description="Seconds until the token expires.")
+    team: TeamId
+    member: MemberName
 
 
 class IdentityResponse(_Base):
-    """Who the presented token says you are. Useful for debugging a client."""
+    """Who the presented session token says you are. Useful for debugging a client."""
 
-    user_id: str
-    email: EmailStr
+    member: MemberName
     team: TeamId
-
-
-class RegisterResponse(IdentityResponse):
-    pass
 
 
 def _validate_note_body(value: str) -> str:
@@ -127,7 +126,7 @@ class NoteResponse(_Base):
         description="ULID; sorts chronologically.",
         examples=["01M3Z4HMB1VS68PXB1QS3EA6GT"],
     )
-    user: EmailStr = Field(description="Email of the author.", examples=["alice@acme.example"])
+    user: MemberName = Field(description="Member the note is attributed to.")
     team: TeamId
     date: str = Field(
         description="ISO 8601 creation time, UTC.",

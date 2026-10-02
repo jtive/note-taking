@@ -1,0 +1,28 @@
+# Defaults for `sam build` and `sam deploy`, so the command in CI and the
+# command a human runs locally are the same one.
+
+version = 0.1
+
+[default.global.parameters]
+stack_name = "note-taking-prod"
+
+[default.build.parameters]
+cached = true
+parallel = true
+
+[default.deploy.parameters]
+region = "us-east-2"
+# The stack creates its own execution role, which requires acknowledging IAM
+# resource creation. No CAPABILITY_NAMED_IAM: nothing here names a role, so
+# CloudFormation can replace them safely.
+capabilities = "CAPABILITY_IAM"
+# Let SAM manage the artifact bucket rather than requiring one to exist first.
+resolve_s3 = true
+confirm_changeset = false
+# A deploy with no changes is a successful no-op, not a failed pipeline.
+fail_on_empty_changeset = false
+parameter_overrides = "Stage=prod"
+tags = "Application=note-taking Stage=prod"
+
+[default.validate.parameters]
+lint = true

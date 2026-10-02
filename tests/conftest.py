@@ -14,6 +14,7 @@ import of anything under notes.
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -23,16 +24,24 @@ from typing import Any
 TABLE_NAME = "note-taking-test"
 JWT_SECRET = "test-signing-key-long-enough-to-satisfy-validation"
 REGION = "us-east-2"
-DEFAULT_PASSWORD = "correct-horse-battery-staple"
+
+#: Stand-ins for the tokens scripts/bootstrap.py mints into SSM. Supplying the
+#: plaintext form of the registry exercises the same parsing path that a local
+#: .env would use; the deployed service is handed digests instead.
+TEAM_TOKENS = {
+    "acme": "nt_test-token-for-acme-team-0000000000",
+    "globex": "nt_test-token-for-globex-team-000000000",
+    "initech": "nt_test-token-for-initech-team-00000000",
+    "umbrella": "nt_test-token-for-umbrella-team-0000000",
+}
 
 os.environ.update(
     {
         "NOTES_TABLE_NAME": TABLE_NAME,
         "NOTES_JWT_SECRET": JWT_SECRET,
-        # 4 rounds keeps the suite fast. Production defaults to 12; the cost
-        # factor is configuration, so lowering it here changes no behaviour
-        # under test.
-        "NOTES_BCRYPT_ROUNDS": "4",
+        "NOTES_TEAM_TOKENS": json.dumps(
+            [{"team_id": team, "token": token} for team, token in TEAM_TOKENS.items()]
+        ),
         # Generous by default so no test trips a limit by accident. The rate
         # limit tests ask for small limits explicitly.
         "NOTES_RATE_LIMIT_REQUESTS": "10000",
@@ -52,6 +61,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from moto import mock_aws  # noqa: E402
 
 from notes.auth.signing_key import get_signing_key  # noqa: E402
+from notes.auth.team_tokens import get_team_credentials  # noqa: E402
 from notes.clock import Clock, get_clock  # noqa: E402
 from notes.config import get_settings  # noqa: E402
 from notes.dependencies import get_table  # noqa: E402
@@ -75,6 +85,7 @@ class FakeClock(Clock):
 def _clear_caches() -> None:
     get_settings.cache_clear()
     get_signing_key.cache_clear()
+    get_team_credentials.cache_clear()
     get_table.cache_clear()
 
 
@@ -139,11 +150,10 @@ def client(make_client: Any) -> TestClient:
 
 @dataclass(frozen=True)
 class Actor:
-    """A registered, authenticated user, ready to make requests."""
+    """A team member holding a session token, ready to make requests."""
 
-    email: str
+    member: str
     team: str
-    user_id: str
     token: str
 
     @property
@@ -152,43 +162,32 @@ class Actor:
 
 
 @pytest.fixture
-def register() -> Any:
-    def _register(
-        client: TestClient,
-        email: str,
-        team: str,
-        password: str = DEFAULT_PASSWORD,
-    ) -> Actor:
-        created = client.post(
-            "/auth/register", json={"email": email, "password": password, "team": team}
-        )
-        assert created.status_code == 201, created.text
+def sign_in() -> Any:
+    """Trade a team's API token for a session token, as a client would."""
 
-        issued = client.post("/auth/token", json={"email": email, "password": password})
+    def _sign_in(client: TestClient, member: str, team: str) -> Actor:
+        issued = client.post(
+            "/auth/token",
+            json={"api_token": TEAM_TOKENS[team], "member": member},
+        )
         assert issued.status_code == 200, issued.text
+        return Actor(member=member, team=team, token=issued.json()["access_token"])
 
-        return Actor(
-            email=email,
-            team=team,
-            user_id=created.json()["user_id"],
-            token=issued.json()["access_token"],
-        )
-
-    return _register
+    return _sign_in
 
 
 @pytest.fixture
-def alice(client: TestClient, register: Any) -> Actor:
-    return register(client, "alice@acme.example", "acme")
+def alice(client: TestClient, sign_in: Any) -> Actor:
+    return sign_in(client, "alice", "acme")
 
 
 @pytest.fixture
-def bob(client: TestClient, register: Any) -> Actor:
-    """Alice's teammate: same team, different user."""
-    return register(client, "bob@acme.example", "acme")
+def bob(client: TestClient, sign_in: Any) -> Actor:
+    """Alice's teammate: same team token, different attributed member."""
+    return sign_in(client, "bob", "acme")
 
 
 @pytest.fixture
-def carol(client: TestClient, register: Any) -> Actor:
+def carol(client: TestClient, sign_in: Any) -> Actor:
     """A different team entirely, for isolation tests."""
-    return register(client, "carol@globex.example", "globex")
+    return sign_in(client, "carol", "globex")

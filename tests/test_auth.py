@@ -1,4 +1,4 @@
-"""Registration, token issuance, and the ways a token can be forged."""
+"""The token exchange, and the ways a session token can be forged."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import jwt
 import pytest
 from fastapi.testclient import TestClient
 
-from tests.conftest import DEFAULT_PASSWORD, JWT_SECRET, Actor
+from tests.conftest import JWT_SECRET, TEAM_TOKENS, Actor
 
 ISSUER = "note-taking-api"
 AUDIENCE = "note-taking-clients"
@@ -24,8 +24,7 @@ def mint(
     """Build a token directly, to test what verification must reject."""
     now = datetime.now(UTC)
     claims: dict[str, Any] = {
-        "sub": "01M3Z4HMB1VS68PXB1QS3EA6GT",
-        "email": "attacker@evil.example",
+        "sub": "attacker",
         "team": "acme",
         "iss": ISSUER,
         "aud": AUDIENCE,
@@ -37,127 +36,143 @@ def mint(
     return jwt.encode(claims, secret, algorithm=algorithm)
 
 
-class TestRegistration:
-    def test_creates_a_user_and_returns_its_identity(self, client: TestClient) -> None:
+class TestTokenExchange:
+    def test_returns_a_short_lived_bearer_token(self, client: TestClient) -> None:
         response = client.post(
-            "/auth/register",
-            json={"email": "alice@acme.example", "password": DEFAULT_PASSWORD, "team": "acme"},
-        )
-
-        assert response.status_code == 201
-        body = response.json()
-        assert body["email"] == "alice@acme.example"
-        assert body["team"] == "acme"
-        assert body["user_id"]
-
-    def test_duplicate_email_is_rejected(self, client: TestClient) -> None:
-        payload = {"email": "alice@acme.example", "password": DEFAULT_PASSWORD, "team": "acme"}
-        assert client.post("/auth/register", json=payload).status_code == 201
-
-        duplicate = client.post("/auth/register", json=payload)
-
-        assert duplicate.status_code == 409
-        assert duplicate.json()["type"] == "urn:notes:error:conflict"
-
-    def test_email_is_normalised_to_lowercase(self, client: TestClient) -> None:
-        created = client.post(
-            "/auth/register",
-            json={"email": "Alice@acme.example", "password": DEFAULT_PASSWORD, "team": "acme"},
-        )
-        assert created.json()["email"] == "alice@acme.example"
-
-        # The normalised form is what the account is keyed on, so either
-        # spelling must authenticate.
-        issued = client.post(
-            "/auth/token", json={"email": "ALICE@acme.example", "password": DEFAULT_PASSWORD}
-        )
-        assert issued.status_code == 200
-
-    def test_password_shorter_than_the_minimum_is_rejected(self, client: TestClient) -> None:
-        response = client.post(
-            "/auth/register",
-            json={"email": "alice@acme.example", "password": "short", "team": "acme"},
-        )
-
-        assert response.status_code == 422
-        assert response.json()["type"] == "urn:notes:error:validation-failed"
-
-    @pytest.mark.parametrize("team", ["-acme", "acme-", "acme team", "acme_team", "acme!", ""])
-    def test_malformed_team_names_are_rejected(self, client: TestClient, team: str) -> None:
-        response = client.post(
-            "/auth/register",
-            json={"email": "alice@acme.example", "password": DEFAULT_PASSWORD, "team": team},
-        )
-
-        assert response.status_code == 422
-
-    def test_team_names_are_case_insensitive(self, client: TestClient) -> None:
-        """'Acme' and 'acme' are the same team, not two teams that look alike."""
-        created = client.post(
-            "/auth/register",
-            json={"email": "alice@acme.example", "password": DEFAULT_PASSWORD, "team": "ACME"},
-        )
-
-        assert created.status_code == 201
-        assert created.json()["team"] == "acme"
-
-    def test_unexpected_fields_are_rejected(self, client: TestClient) -> None:
-        response = client.post(
-            "/auth/register",
-            json={
-                "email": "alice@acme.example",
-                "password": DEFAULT_PASSWORD,
-                "team": "acme",
-                "is_admin": True,
-            },
-        )
-
-        assert response.status_code == 422
-
-
-class TestTokenIssuance:
-    def test_returns_a_bearer_token(self, client: TestClient, alice: Actor) -> None:
-        response = client.post(
-            "/auth/token", json={"email": alice.email, "password": DEFAULT_PASSWORD}
+            "/auth/token",
+            json={"api_token": TEAM_TOKENS["acme"], "member": "alice"},
         )
 
         assert response.status_code == 200
         body = response.json()
         assert body["token_type"] == "bearer"
         assert body["expires_in"] == 3600
+        assert body["team"] == "acme"
+        assert body["member"] == "alice"
         assert body["access_token"]
 
-    def test_token_carries_the_user_and_team(self, client: TestClient, alice: Actor) -> None:
+    @pytest.mark.parametrize("team", sorted(TEAM_TOKENS))
+    def test_every_team_token_resolves_to_its_own_team(self, client: TestClient, team: str) -> None:
+        response = client.post(
+            "/auth/token",
+            json={"api_token": TEAM_TOKENS[team], "member": "someone"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["team"] == team
+
+    def test_the_team_comes_from_the_token_not_the_request(self, client: TestClient) -> None:
+        """A caller cannot name the team they would like to be in.
+
+        The schema forbids unknown fields, so an attempt to pass one is a 422
+        rather than a silently ignored field that might later be honoured.
+        """
+        response = client.post(
+            "/auth/token",
+            json={"api_token": TEAM_TOKENS["acme"], "member": "alice", "team": "globex"},
+        )
+
+        assert response.status_code == 422
+
+    def test_token_carries_the_member_and_team(self, alice: Actor) -> None:
         claims = jwt.decode(
             alice.token, JWT_SECRET, algorithms=["HS256"], audience=AUDIENCE, issuer=ISSUER
         )
 
-        assert claims["sub"] == alice.user_id
+        assert claims["sub"] == "alice"
         assert claims["team"] == "acme"
-        assert claims["email"] == alice.email
         assert claims["jti"], "a unique id is needed for any future revocation list"
 
-    def test_wrong_password_is_rejected(self, client: TestClient, alice: Actor) -> None:
+    def test_unknown_api_token_is_rejected(self, client: TestClient) -> None:
         response = client.post(
-            "/auth/token", json={"email": alice.email, "password": "not-the-password"}
+            "/auth/token",
+            json={"api_token": "nt_not-a-real-token-but-the-right-shape", "member": "alice"},
         )
 
         assert response.status_code == 401
         assert response.json()["type"] == "urn:notes:error:invalid-credentials"
 
-    def test_unknown_account_is_indistinguishable_from_a_wrong_password(
-        self, client: TestClient, alice: Actor
-    ) -> None:
-        unknown = client.post(
-            "/auth/token", json={"email": "nobody@acme.example", "password": DEFAULT_PASSWORD}
+    def test_a_near_miss_is_indistinguishable_from_nonsense(self, client: TestClient) -> None:
+        """Getting most of a token right must not be reported differently."""
+        almost = client.post(
+            "/auth/token",
+            json={"api_token": TEAM_TOKENS["acme"][:-1] + "x", "member": "alice"},
         )
-        wrong_password = client.post(
-            "/auth/token", json={"email": alice.email, "password": "not-the-password"}
+        nonsense = client.post(
+            "/auth/token",
+            json={"api_token": "completely-wrong-but-long-enough-value", "member": "alice"},
         )
 
-        # Identical bodies, so the endpoint cannot be used to enumerate accounts.
-        assert unknown.status_code == wrong_password.status_code == 401
-        assert unknown.json() == wrong_password.json()
+        assert almost.status_code == nonsense.status_code == 401
+        assert almost.json() == nonsense.json()
+
+    def test_an_absurdly_short_token_is_rejected_without_comparison(
+        self, client: TestClient
+    ) -> None:
+        response = client.post("/auth/token", json={"api_token": "nt_x", "member": "alice"})
+
+        assert response.status_code == 401
+
+    def test_the_api_token_is_never_echoed_back(self, client: TestClient) -> None:
+        """Not in the success body, and not in the 401 either."""
+        secret = TEAM_TOKENS["acme"]
+
+        issued = client.post("/auth/token", json={"api_token": secret, "member": "alice"})
+        refused = client.post("/auth/token", json={"api_token": "nt_wrong", "member": "alice"})
+
+        assert secret not in issued.text
+        assert "nt_wrong" not in refused.text
+
+    @pytest.mark.parametrize("member", ["", "   ", "-alice", "alice\x00bob", "al/ice", "a" * 65])
+    def test_malformed_member_names_are_rejected(self, client: TestClient, member: str) -> None:
+        response = client.post(
+            "/auth/token",
+            json={"api_token": TEAM_TOKENS["acme"], "member": member},
+        )
+
+        assert response.status_code == 422
+        assert response.json()["type"] == "urn:notes:error:validation-failed"
+
+    def test_member_whitespace_is_collapsed(self, client: TestClient) -> None:
+        """So 'Alice  Smith' and 'Alice Smith' are not two different authors."""
+        response = client.post(
+            "/auth/token",
+            json={"api_token": TEAM_TOKENS["acme"], "member": "  Alice   Smith  "},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["member"] == "Alice Smith"
+
+    @pytest.mark.parametrize("member", ["alice\nbob", "alice\nINFO forged line", "alice\r\nbob"])
+    def test_an_embedded_newline_never_survives(self, client: TestClient, member: str) -> None:
+        """The name reaches log lines and a JWT claim, so a raw newline would
+        let a caller forge an extra log entry. Collapsing whitespace is what
+        prevents it; a name that is still malformed afterwards is rejected
+        instead. Either outcome satisfies the invariant.
+        """
+        response = client.post(
+            "/auth/token",
+            json={"api_token": TEAM_TOKENS["acme"], "member": member},
+        )
+
+        if response.status_code == 200:
+            assert "\n" not in response.json()["member"]
+        else:
+            assert response.status_code == 422
+
+    def test_an_email_address_is_an_acceptable_member_name(self, client: TestClient) -> None:
+        response = client.post(
+            "/auth/token",
+            json={"api_token": TEAM_TOKENS["acme"], "member": "alice@acme.example"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["member"] == "alice@acme.example"
+
+    def test_the_api_token_is_required(self, client: TestClient) -> None:
+        response = client.post("/auth/token", json={"member": "alice"})
+
+        assert response.status_code == 422
 
 
 class TestTokenVerification:
@@ -165,11 +180,7 @@ class TestTokenVerification:
         response = client.get("/auth/me", headers=alice.headers)
 
         assert response.status_code == 200
-        assert response.json() == {
-            "user_id": alice.user_id,
-            "email": alice.email,
-            "team": "acme",
-        }
+        assert response.json() == {"member": "alice", "team": "acme"}
 
     def test_missing_header_is_unauthorised(self, client: TestClient) -> None:
         response = client.get("/auth/me")
@@ -179,6 +190,14 @@ class TestTokenVerification:
 
     def test_garbage_token_is_rejected(self, client: TestClient) -> None:
         response = client.get("/auth/me", headers={"Authorization": "Bearer not-a-jwt"})
+
+        assert response.status_code == 401
+
+    def test_an_api_token_is_not_a_session_token(self, client: TestClient) -> None:
+        """The long-lived credential must only work at the exchange endpoint."""
+        response = client.get(
+            "/auth/me", headers={"Authorization": f"Bearer {TEAM_TOKENS['acme']}"}
+        )
 
         assert response.status_code == 401
 
@@ -193,8 +212,7 @@ class TestTokenVerification:
         """An `alg: none` token must not be accepted on the strength of its claims."""
         unsigned = jwt.encode(
             {
-                "sub": "whoever",
-                "email": "attacker@evil.example",
+                "sub": "attacker",
                 "team": "acme",
                 "iss": ISSUER,
                 "aud": AUDIENCE,
@@ -232,7 +250,7 @@ class TestTokenVerification:
         assert response.status_code == 401
         assert "expired" in response.json()["detail"].lower()
 
-    @pytest.mark.parametrize("claim", ["sub", "email", "team", "exp", "iat"])
+    @pytest.mark.parametrize("claim", ["sub", "team", "exp", "iat"])
     def test_token_missing_a_required_claim_is_rejected(
         self, client: TestClient, claim: str
     ) -> None:
@@ -244,7 +262,7 @@ class TestTokenVerification:
 
     @pytest.mark.parametrize(
         ("field", "value"),
-        [("iss", "https://evil.test"), ("aud", "some-other-service")],
+        [("iss", "https://evil.example"), ("aud", "some-other-service")],
     )
     def test_token_for_another_issuer_or_audience_is_rejected(
         self, client: TestClient, field: str, value: str
@@ -260,7 +278,7 @@ class TestTokenVerification:
         self, client: TestClient, alice: Actor
     ) -> None:
         header, _original_payload, signature = alice.token.split(".")
-        other_team = mint(team="globex", sub=alice.user_id, email=alice.email).split(".")[1]
+        other_team = mint(team="globex", sub=alice.member).split(".")[1]
         spliced = f"{header}.{other_team}.{signature}"
 
         response = client.get("/auth/me", headers={"Authorization": f"Bearer {spliced}"})

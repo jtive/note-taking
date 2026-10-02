@@ -1,116 +1,77 @@
-"""Registration and token issuance.
+"""Exchanging a team's API token for a short-lived session token.
 
-Registration is open: anyone may claim membership of any team by naming it.
-That is a deliberate scope boundary for this exercise, not an oversight - a
-real deployment needs invitations or a directory, and the README says so. It
-keeps the auth story reviewable without an email-delivery dependency.
+There is no registration endpoint and no password store. Each team holds one
+long-lived API token, provisioned out of band by scripts/bootstrap.py, and
+trades it here for a JWT that expires within the hour. The long-lived secret
+therefore travels once per session instead of on every request, and the
+credential on the wire for ordinary calls is one that expires on its own.
+
+The member name in the exchange is attribution, not authentication: the token
+proves which team is calling, not which person. See notes/auth/team_tokens.py.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends
 
-from notes.auth.passwords import hash_password, spend_verification_time, verify_password
 from notes.auth.signing_key import get_signing_key
+from notes.auth.team_tokens import resolve_team
 from notes.auth.tokens import Principal, issue_token
 from notes.clock import Clock, get_clock
 from notes.config import Settings, get_settings
 from notes.dependencies import (
     enforce_auth_rate_limit,
-    enforce_user_rate_limit,
+    enforce_team_rate_limit,
     get_principal,
-    get_repository,
 )
-from notes.errors import InvalidCredentialsError
-from notes.models import (
-    IdentityResponse,
-    RegisterRequest,
-    RegisterResponse,
-    TokenRequest,
-    TokenResponse,
-)
-from notes.repository import Repository
+from notes.models import IdentityResponse, TokenRequest, TokenResponse
 from notes.routes import PROBLEM_RESPONSES
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 @router.post(
-    "/register",
-    status_code=status.HTTP_201_CREATED,
-    response_model=RegisterResponse,
-    summary="Create an account and join a team",
-    dependencies=[Depends(enforce_auth_rate_limit)],
-    responses={
-        409: {"description": "An account with that email already exists."},
-        **PROBLEM_RESPONSES,
-    },
-)
-def register(
-    payload: RegisterRequest,
-    repository: Repository = Depends(get_repository),
-    settings: Settings = Depends(get_settings),
-) -> RegisterResponse:
-    """Register a user. The team is created if this is its first member."""
-    password_hash = hash_password(
-        payload.password.get_secret_value(), rounds=settings.bcrypt_rounds
-    )
-    user = repository.create_user(
-        email=payload.email,
-        password_hash=password_hash,
-        team_id=payload.team,
-    )
-    return RegisterResponse(user_id=user.user_id, email=user.email, team=user.team_id)
-
-
-@router.post(
     "/token",
     response_model=TokenResponse,
-    summary="Exchange credentials for a bearer token",
+    summary="Exchange a team API token for a session token",
     dependencies=[Depends(enforce_auth_rate_limit)],
     responses=PROBLEM_RESPONSES,
 )
 def create_token(
     payload: TokenRequest,
-    repository: Repository = Depends(get_repository),
     settings: Settings = Depends(get_settings),
     clock: Clock = Depends(get_clock),
 ) -> TokenResponse:
-    """Issue a short-lived JWT carrying the caller's user id and team."""
-    user = repository.get_user(payload.email)
+    """Issue a short-lived JWT carrying the caller's team and member name.
 
-    if user is None:
-        # Hash anyway. Returning early here would make an unknown address
-        # answer in microseconds and a known one in hundreds of milliseconds,
-        # which is enough to enumerate accounts by timing alone.
-        spend_verification_time(rounds=settings.bcrypt_rounds)
-        raise InvalidCredentialsError
-
-    if not verify_password(payload.password.get_secret_value(), user.password_hash):
-        raise InvalidCredentialsError
+    An unrecognised API token returns the same 401 as any other failure, with
+    no indication of whether a prefix or a team happened to be right.
+    """
+    team_id = resolve_team(payload.api_token.get_secret_value())
 
     token = issue_token(
-        principal=Principal(user_id=user.user_id, email=user.email, team_id=user.team_id),
+        principal=Principal(member=payload.member, team_id=team_id),
         signing_key=get_signing_key(),
         issuer=settings.jwt_issuer,
         audience=settings.jwt_audience,
         ttl_seconds=settings.jwt_ttl_seconds,
         now=clock.now(),
     )
-    return TokenResponse(access_token=token, expires_in=settings.jwt_ttl_seconds)
+    return TokenResponse(
+        access_token=token,
+        expires_in=settings.jwt_ttl_seconds,
+        team=team_id,
+        member=payload.member,
+    )
 
 
 @router.get(
     "/me",
     response_model=IdentityResponse,
-    summary="Describe the presented token",
-    dependencies=[Depends(enforce_user_rate_limit)],
+    summary="Describe the presented session token",
+    dependencies=[Depends(enforce_team_rate_limit)],
     responses=PROBLEM_RESPONSES,
 )
 def read_identity(principal: Principal = Depends(get_principal)) -> IdentityResponse:
-    """Echo the identity the token asserts, for debugging a client."""
-    return IdentityResponse(
-        user_id=principal.user_id,
-        email=principal.email,
-        team=principal.team_id,
-    )
+    """Echo the identity the session token asserts, for debugging a client."""
+    return IdentityResponse(member=principal.member, team=principal.team_id)

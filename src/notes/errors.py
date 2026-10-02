@@ -77,9 +77,10 @@ class InvalidCredentialsError(AuthenticationError):
     code = "invalid-credentials"
 
     def __init__(self) -> None:
-        # Deliberately indistinguishable between "no such user" and "wrong
-        # password" so the endpoint cannot be used to enumerate accounts.
-        super().__init__("Email or password is incorrect.")
+        # One message for every way a credential can be wrong - malformed,
+        # nearly right, or entirely unknown - so the response cannot be used
+        # to narrow down a guess.
+        super().__init__("The API token is not valid.")
 
 
 class PermissionDeniedError(ApiError):

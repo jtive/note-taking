@@ -1,4 +1,4 @@
-"""All DynamoDB access for users, teams and notes.
+"""All DynamoDB access for notes.
 
 Every method takes the caller's team as an argument and builds keys from it, so
 there is no code path that can read or write outside the caller's partition.
@@ -35,20 +35,10 @@ CONDITIONAL_CHECK_FAILED = "ConditionalCheckFailedException"
 
 
 @dataclass(frozen=True, slots=True)
-class User:
-    user_id: str
-    email: str
-    team_id: str
-    password_hash: str
-    created_at: str
-
-
-@dataclass(frozen=True, slots=True)
 class Note:
     note_id: str
     team_id: str
-    author_user_id: str
-    author_email: str
+    author: str
     text: str
     created_at: str
     updated_at: str
@@ -90,8 +80,7 @@ def decode_cursor(cursor: str, expected_partition: str) -> dict[str, str]:
 
 
 def _error_code(exc: ClientError) -> str:
-    code = exc.response.get("Error", {}).get("Code", "")
-    return str(code)
+    return str(exc.response.get("Error", {}).get("Code", ""))
 
 
 class Repository:
@@ -99,95 +88,12 @@ class Repository:
         self._table = table
         self._clock = clock
 
-    # ---------------------------------------------------------------- users
-
-    def create_user(self, *, email: str, password_hash: str, team_id: str) -> User:
-        """Register a user, creating the team record if this is its first member.
-
-        Email uniqueness is enforced by a conditional write rather than by
-        reading first and then writing. A read-then-write would let two
-        simultaneous registrations for the same address both see "available"
-        and both succeed.
-        """
-        now = to_iso8601(self._clock.now())
-        user = User(
-            user_id=str(ULID()),
-            email=email.strip().lower(),
-            team_id=team_id,
-            password_hash=password_hash,
-            created_at=now,
-        )
-
-        item = {
-            **schema.user_key(user.email),
-            "entity_type": "user",
-            "user_id": user.user_id,
-            "email": user.email,
-            "team_id": user.team_id,
-            "password_hash": user.password_hash,
-            "created_at": user.created_at,
-        }
-
-        try:
-            self._table.put_item(
-                Item=item,
-                ConditionExpression="attribute_not_exists(#pk)",
-                ExpressionAttributeNames={"#pk": schema.PARTITION_KEY},
-            )
-        except ClientError as exc:
-            if _error_code(exc) == CONDITIONAL_CHECK_FAILED:
-                raise ConflictError("An account with that email already exists.") from exc
-            raise
-
-        self._ensure_team(team_id, now)
-        return user
-
-    def _ensure_team(self, team_id: str, created_at: str) -> None:
-        """Create the team record once. A repeat registration is a no-op."""
-        try:
-            self._table.put_item(
-                Item={
-                    **schema.team_key(team_id),
-                    "entity_type": "team",
-                    "team_id": team_id,
-                    "created_at": created_at,
-                },
-                ConditionExpression="attribute_not_exists(#pk)",
-                ExpressionAttributeNames={"#pk": schema.PARTITION_KEY},
-            )
-        except ClientError as exc:
-            if _error_code(exc) != CONDITIONAL_CHECK_FAILED:
-                raise
-
-    def get_user(self, email: str) -> User | None:
-        # Strongly consistent: a user registering and immediately logging in
-        # should not be told their credentials are wrong because the write has
-        # not propagated yet.
-        response: dict[str, Any] = self._table.get_item(
-            Key=schema.user_key(email), ConsistentRead=True
-        )
-        item = response.get("Item")
-        if item is None:
-            return None
-        return User(
-            user_id=str(item["user_id"]),
-            email=str(item["email"]),
-            team_id=str(item["team_id"]),
-            password_hash=str(item["password_hash"]),
-            created_at=str(item["created_at"]),
-        )
-
-    # ---------------------------------------------------------------- notes
-
-    def create_note(
-        self, *, team_id: str, author_user_id: str, author_email: str, text: str
-    ) -> Note:
+    def create_note(self, *, team_id: str, author: str, text: str) -> Note:
         now = to_iso8601(self._clock.now())
         note = Note(
             note_id=str(ULID()),
             team_id=team_id,
-            author_user_id=author_user_id,
-            author_email=author_email,
+            author=author,
             text=text,
             created_at=now,
             updated_at=now,
@@ -200,14 +106,13 @@ class Repository:
                 "entity_type": "note",
                 "note_id": note.note_id,
                 "team_id": team_id,
-                "author_user_id": author_user_id,
-                "author_email": author_email,
+                "author": author,
                 "note": text,
                 # Lowercase shadow copy so ?q= can match case-insensitively.
                 # DynamoDB's contains() has no case-folding option, so the
-                # alternative is a case-sensitive search. Storing the text twice
-                # costs space; for notes capped at 20k characters that is a
-                # better trade than surprising search results.
+                # alternative is a case-sensitive search. Storing the text
+                # twice costs space; for notes capped at 20k characters that
+                # is a better trade than surprising search results.
                 "note_lower": text.lower(),
                 "created_at": now,
                 "updated_at": now,
@@ -272,18 +177,18 @@ class Repository:
         *,
         team_id: str,
         note_id: str,
-        author_user_id: str,
+        author: str,
         text: str,
         expected_version: int | None = None,
     ) -> Note:
-        """Replace a note's text. Only the author may do so.
+        """Replace a note's text. Only its author may do so.
 
         Authorship and the optional If-Match version are enforced inside the
         conditional write, so there is no window between checking and writing.
         """
         condition = "attribute_exists(#sk) AND #author = :author"
         values: dict[str, Any] = {
-            ":author": author_user_id,
+            ":author": author,
             ":note": text,
             ":lower": text.lower(),
             ":now": to_iso8601(self._clock.now()),
@@ -302,7 +207,7 @@ class Repository:
                 ConditionExpression=condition,
                 ExpressionAttributeNames={
                     "#sk": schema.SORT_KEY,
-                    "#author": "author_user_id",
+                    "#author": "author",
                     "#note": "note",
                     "#lower": "note_lower",
                     "#updated": "updated_at",
@@ -316,30 +221,30 @@ class Repository:
                 self._raise_for_failed_write(
                     team_id=team_id,
                     note_id=note_id,
-                    author_user_id=author_user_id,
+                    author=author,
                     expected_version=expected_version,
                 )
             raise
 
         return self._to_note(response["Attributes"])
 
-    def delete_note(self, *, team_id: str, note_id: str, author_user_id: str) -> None:
+    def delete_note(self, *, team_id: str, note_id: str, author: str) -> None:
         try:
             self._table.delete_item(
                 Key=schema.note_key(team_id, note_id),
                 ConditionExpression="attribute_exists(#sk) AND #author = :author",
                 ExpressionAttributeNames={
                     "#sk": schema.SORT_KEY,
-                    "#author": "author_user_id",
+                    "#author": "author",
                 },
-                ExpressionAttributeValues={":author": author_user_id},
+                ExpressionAttributeValues={":author": author},
             )
         except ClientError as exc:
             if _error_code(exc) == CONDITIONAL_CHECK_FAILED:
                 self._raise_for_failed_write(
                     team_id=team_id,
                     note_id=note_id,
-                    author_user_id=author_user_id,
+                    author=author,
                     expected_version=None,
                 )
             raise
@@ -349,7 +254,7 @@ class Repository:
         *,
         team_id: str,
         note_id: str,
-        author_user_id: str,
+        author: str,
         expected_version: int | None,
     ) -> None:
         """Turn a failed condition into the right status code.
@@ -362,7 +267,7 @@ class Repository:
 
         if existing is None:
             raise NotFoundError("No note with that id exists in your team.")
-        if existing.author_user_id != author_user_id:
+        if existing.author != author:
             raise PermissionDeniedError("Only the author of a note can modify or delete it.")
         if expected_version is not None and existing.version != expected_version:
             raise PreconditionFailedError(
@@ -378,8 +283,7 @@ class Repository:
         return Note(
             note_id=str(item["note_id"]),
             team_id=str(item["team_id"]),
-            author_user_id=str(item["author_user_id"]),
-            author_email=str(item["author_email"]),
+            author=str(item["author"]),
             text=str(item["note"]),
             created_at=str(item["created_at"]),
             updated_at=str(item["updated_at"]),

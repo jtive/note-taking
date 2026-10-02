@@ -32,12 +32,12 @@ def test_problem_documents_carry_every_required_member(client: TestClient, alice
 
 
 def test_validation_failures_list_the_offending_fields(client: TestClient) -> None:
-    response = client.post("/auth/register", json={"email": "not-an-email"})
+    response = client.post("/auth/token", json={})
 
     assert response.status_code == 422
     fields = {tuple(error["loc"]) for error in response.json()["errors"]}
-    assert ("body", "email") in fields
-    assert ("body", "password") in fields
+    assert ("body", "api_token") in fields
+    assert ("body", "member") in fields
 
 
 def test_a_wrong_method_is_reported_as_a_problem(client: TestClient) -> None:

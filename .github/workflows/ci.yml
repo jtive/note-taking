@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  # Called by deploy.yml, so a deploy cannot skip the checks.
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Lint, type check and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          # Matches the Lambda runtime in template.yaml, so the suite runs on
+          # the interpreter the service will actually use.
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: |
+            requirements-dev.txt
+            src/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Check formatting
+        run: ruff format --check .
+
+      - name: Type check
+        run: mypy
+
+      - name: Test
+        # The threshold is a ratchet against regression, not a target. The
+        # suite currently sits near 98 percent.
+        run: pytest --cov --cov-report=term-missing --cov-fail-under=90
+
+  template:
+    name: Validate the SAM template
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install AWS SAM CLI
+        # Installed in isolation rather than into the application environment,
+        # whose boto3 pin it would otherwise fight over.
+        run: pipx install aws-sam-cli==1.166.2
+
+      - name: Validate
+        # Linting catches malformed resources and unresolvable references
+        # before a deploy spends five minutes discovering them.
+        run: sam validate --lint
+        env:
+          # sam validate --lint needs a region even though it calls nothing.
+          AWS_REGION: us-east-2
+          SAM_CLI_TELEMETRY: 0

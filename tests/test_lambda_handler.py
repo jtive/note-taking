@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 
 from notes.handler import lambda_handler
+from tests.conftest import TEAM_TOKENS
 
 SOURCE_IP = "203.0.113.17"
 
@@ -82,30 +83,16 @@ def test_an_unrouted_path_returns_a_problem_document(table: Any, context: Simple
 
 
 def test_a_full_round_trip_works_end_to_end(table: Any, context: SimpleNamespace) -> None:
-    """Register, get a token, write a note, read it back - all through Lambda."""
-    registered = lambda_handler(
-        api_gateway_event(
-            "POST",
-            "/auth/register",
-            body={
-                "email": "alice@acme.example",
-                "password": "correct-horse-battery-staple",
-                "team": "acme",
-            },
-        ),
-        context,
-    )
-    assert registered["statusCode"] == 201
-
+    """Exchange a team token, write a note, read it back - all through Lambda."""
     issued = lambda_handler(
         api_gateway_event(
             "POST",
             "/auth/token",
-            body={"email": "alice@acme.example", "password": "correct-horse-battery-staple"},
+            body={"api_token": TEAM_TOKENS["acme"], "member": "alice"},
         ),
         context,
     )
-    assert issued["statusCode"] == 200
+    assert issued["statusCode"] == 200, issued["body"]
     token = json.loads(issued["body"])["access_token"]
 
     create = api_gateway_event("POST", "/notes", body={"note": "written via Lambda"})
@@ -138,20 +125,20 @@ def test_the_rate_limiter_sees_the_api_gateway_source_address(
     monkeypatch.setenv("NOTES_AUTH_RATE_LIMIT_REQUESTS", "1")
     get_settings.cache_clear()
 
-    credentials = {"email": "nobody@acme.example", "password": "correct-horse-battery-staple"}
+    guess = {"api_token": "nt_not-the-real-token", "member": "alice"}
 
     first = lambda_handler(
-        api_gateway_event("POST", "/auth/token", body=credentials, source_ip="198.51.100.1"),
+        api_gateway_event("POST", "/auth/token", body=guess, source_ip="198.51.100.1"),
         context,
     )
     second = lambda_handler(
-        api_gateway_event("POST", "/auth/token", body=credentials, source_ip="198.51.100.1"),
+        api_gateway_event("POST", "/auth/token", body=guess, source_ip="198.51.100.1"),
         context,
     )
     # A different address starts with a fresh allowance, which is what proves
     # the counter is keyed on the address rather than on a shared constant.
     other_caller = lambda_handler(
-        api_gateway_event("POST", "/auth/token", body=credentials, source_ip="198.51.100.99"),
+        api_gateway_event("POST", "/auth/token", body=guess, source_ip="198.51.100.99"),
         context,
     )
 

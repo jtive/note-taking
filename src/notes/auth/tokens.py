@@ -1,14 +1,15 @@
-"""JWT issuance and verification.
+"""Session token issuance and verification.
 
-The token is the only thing the API trusts to say who you are and which team
-you belong to, so the team claim is what every DynamoDB key is built from.
-That makes verification the single most security-sensitive function here.
+A session token is what the API accepts on every request, and its `team` claim
+is what every DynamoDB key is built from. That makes verification the single
+most security-sensitive function here.
 
-Stateless tokens were chosen over opaque tokens looked up in the database: the
-authenticated path costs zero reads, and the team and user identity travel with
-the request. The cost is that a token cannot be revoked before it expires,
-which the one-hour lifetime bounds but does not remove. A revocation list keyed
-on `jti` is the natural next step.
+Stateless JWTs were chosen over opaque tokens looked up in the database: the
+authenticated path costs zero reads, and the team travels with the request. The
+cost is that a token cannot be revoked before it expires, which the one-hour
+lifetime bounds but does not remove. A revocation list keyed on `jti` is the
+natural next step, and `jti` is already issued so that it can be added without
+invalidating anything.
 """
 
 from __future__ import annotations
@@ -28,15 +29,20 @@ ALGORITHM = "HS256"
 
 MINIMUM_KEY_LENGTH = 32
 
-REQUIRED_CLAIMS = ["exp", "iat", "iss", "aud", "sub", "email", "team"]
+REQUIRED_CLAIMS = ["exp", "iat", "iss", "aud", "sub", "team"]
 
 
 @dataclass(frozen=True, slots=True)
 class Principal:
-    """The verified identity behind a request."""
+    """The identity behind a request.
 
-    user_id: str
-    email: str
+    `team_id` is authenticated: it came from an API token the caller proved
+    they hold. `member` is only attributed: it is whatever the caller declared
+    at exchange time. Nothing that needs to be trustworthy may depend on
+    `member` alone - see the note in notes/auth/team_tokens.py.
+    """
+
+    member: str
     team_id: str
 
 
@@ -51,8 +57,7 @@ def issue_token(
 ) -> str:
     expires_at = now + timedelta(seconds=ttl_seconds)
     claims = {
-        "sub": principal.user_id,
-        "email": principal.email,
+        "sub": principal.member,
         "team": principal.team_id,
         "iss": issuer,
         "aud": audience,
@@ -81,8 +86,4 @@ def decode_token(token: str, *, signing_key: str, issuer: str, audience: str) ->
         # issuer, and missing claims. The client learns nothing about which.
         raise AuthenticationError("Token is invalid.") from exc
 
-    return Principal(
-        user_id=str(claims["sub"]),
-        email=str(claims["email"]),
-        team_id=str(claims["team"]),
-    )
+    return Principal(member=str(claims["sub"]), team_id=str(claims["team"]))

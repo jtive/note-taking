@@ -1,11 +1,13 @@
-"""The physical DynamoDB layout: one table, four item types, no secondary indexes.
+"""The physical DynamoDB layout: one table, two item types, no secondary indexes.
 
-Every item lives in the same table and is distinguished by its key prefixes:
+Items share the table and are distinguished by their key prefixes:
 
-    User        PK=USER#{email}   SK=PROFILE
-    Team        PK=TEAM#{team}    SK=META
     Note        PK=TEAM#{team}    SK=NOTE#{ulid}
     Rate limit  PK=RL#{subject}   SK=W#{window_start}
+
+There is no user or team item. Teams and their credentials live in the token
+registry (see notes/auth/team_tokens.py), so the table holds only what the
+application actually generates.
 
 Two properties of this layout carry most of the design weight.
 
@@ -32,12 +34,7 @@ from typing import Any
 PARTITION_KEY = "PK"
 SORT_KEY = "SK"
 
-USER_PK_PREFIX = "USER#"
-USER_SK = "PROFILE"
-
 TEAM_PK_PREFIX = "TEAM#"
-TEAM_SK = "META"
-
 NOTE_SK_PREFIX = "NOTE#"
 
 RATE_LIMIT_PK_PREFIX = "RL#"
@@ -46,20 +43,8 @@ RATE_LIMIT_SK_PREFIX = "W#"
 TTL_ATTRIBUTE = "expires_at"
 
 
-def user_partition(email: str) -> str:
-    return f"{USER_PK_PREFIX}{email.strip().lower()}"
-
-
-def user_key(email: str) -> dict[str, str]:
-    return {PARTITION_KEY: user_partition(email), SORT_KEY: USER_SK}
-
-
 def team_partition(team_id: str) -> str:
     return f"{TEAM_PK_PREFIX}{team_id}"
-
-
-def team_key(team_id: str) -> dict[str, str]:
-    return {PARTITION_KEY: team_partition(team_id), SORT_KEY: TEAM_SK}
 
 
 def note_sort_key(note_id: str) -> str:

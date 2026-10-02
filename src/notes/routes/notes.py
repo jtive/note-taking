@@ -6,6 +6,11 @@ building the DynamoDB partition key from the token's team claim, so a note
 belonging to another team is not merely forbidden - it is unaddressable, and
 the API reports 404 rather than 403 so it never confirms that an id exists
 somewhere else.
+
+Within a team the author check is a guardrail rather than a security boundary:
+members share one API token, so the member name is attribution. It stops a
+teammate deleting your note by accident, not an attacker holding the team's
+token from doing so deliberately.
 """
 
 from __future__ import annotations
@@ -14,7 +19,7 @@ from fastapi import APIRouter, Depends, Header, Path, Query, Response, status
 
 from notes.auth.tokens import Principal
 from notes.config import Settings, get_settings
-from notes.dependencies import enforce_user_rate_limit, get_principal, get_repository
+from notes.dependencies import enforce_team_rate_limit, get_principal, get_repository
 from notes.errors import NotFoundError, ValidationError
 from notes.models import (
     NoteCreateRequest,
@@ -40,8 +45,8 @@ router = APIRouter(
     prefix="/notes",
     tags=["notes"],
     # Applied to every route below, which also makes authentication mandatory:
-    # the limiter is keyed on the authenticated user id.
-    dependencies=[Depends(enforce_user_rate_limit)],
+    # the limiter is keyed on the authenticated team.
+    dependencies=[Depends(enforce_team_rate_limit)],
     responses=PROBLEM_RESPONSES,
 )
 
@@ -49,7 +54,7 @@ router = APIRouter(
 def _to_response(note: Note) -> NoteResponse:
     return NoteResponse(
         id=note.note_id,
-        user=note.author_email,
+        user=note.author,
         team=note.team_id,
         date=note.created_at,
         note=note.text,
@@ -95,8 +100,7 @@ def create_note(
 ) -> NoteResponse:
     note = repository.create_note(
         team_id=principal.team_id,
-        author_user_id=principal.user_id,
-        author_email=principal.email,
+        author=principal.member,
         text=payload.note,
     )
     response.headers["Location"] = f"/notes/{note.note_id}"
@@ -197,7 +201,7 @@ def update_note(
     note = repository.update_note(
         team_id=principal.team_id,
         note_id=note_id,
-        author_user_id=principal.user_id,
+        author=principal.member,
         text=payload.note,
         expected_version=_parse_if_match(if_match),
     )
@@ -219,5 +223,5 @@ def delete_note(
     repository.delete_note(
         team_id=principal.team_id,
         note_id=note_id,
-        author_user_id=principal.user_id,
+        author=principal.member,
     )

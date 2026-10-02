@@ -24,10 +24,13 @@ logger = logging.getLogger(__name__)
 DESCRIPTION = """
 A note-taking API for small teams.
 
+Each team holds one long-lived API token. Trade it at `POST /auth/token`, along
+with the name to attribute notes to, for a session token that expires within
+the hour, then send that as `Authorization: Bearer <token>`. The session token
+carries your team, and the team is what scopes every query.
+
 Every note belongs to a team. Any member of that team can read its notes; only
-the author can edit or delete one. Authenticate with `POST /auth/token` and
-send the result as `Authorization: Bearer <token>`; the token carries both your
-user id and your team, and the team is what scopes every query.
+the member a note is attributed to can edit or delete it.
 
 Errors are [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem
 documents. Rate limit state is reported on every response via the

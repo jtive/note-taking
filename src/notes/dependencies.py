@@ -85,20 +85,26 @@ def _apply(decision_headers: dict[str, str], response: Response) -> None:
         response.headers[name] = value
 
 
-def enforce_user_rate_limit(
+def enforce_team_rate_limit(
     response: Response,
     principal: Principal = Depends(get_principal),
     limiter: RateLimiter = Depends(get_rate_limiter),
     settings: Settings = Depends(get_settings),
 ) -> None:
-    """Per-user limit on the authenticated surface.
+    """Per-team limit on the authenticated surface.
 
-    Keyed on the user id from the token rather than the source IP, so a whole
-    office behind one address is not throttled as a single client, and a
-    single client cannot escape the limit by changing address.
+    Keyed on the team rather than the member, because the team is the only
+    thing the credential actually proves. A member name is declared by the
+    caller at token-exchange time, so limiting per member would be trivially
+    escaped by exchanging a new token under a different name. Keying on the
+    source address would be just as wrong in the other direction: a whole
+    office behind one NAT would share a single allowance.
+
+    The cost is that one busy member consumes their team's allowance. Fixing
+    that properly needs per-member credentials, not a different limit key.
     """
     decision = limiter.check(
-        subject=f"user:{principal.user_id}",
+        subject=f"team:{principal.team_id}",
         limit=settings.rate_limit_requests,
         window_seconds=settings.rate_limit_window_seconds,
     )
@@ -116,10 +122,12 @@ def enforce_auth_rate_limit(
     limiter: RateLimiter = Depends(get_rate_limiter),
     settings: Settings = Depends(get_settings),
 ) -> None:
-    """Tighter per-IP limit on registration and token issuance.
+    """Tighter per-IP limit on token exchange.
 
-    These routes are reachable without credentials, so the threat is guessing
-    them. The limit is deliberately much lower than the authenticated one.
+    This route is reachable without a session token, so the threat is someone
+    guessing an API token. There is no verified identity to key on yet, which
+    leaves the source address. The limit is deliberately much lower than the
+    authenticated one.
     """
     decision = limiter.check(
         subject=f"ip:{client_ip}",
@@ -129,7 +137,7 @@ def enforce_auth_rate_limit(
     _apply(decision.headers(), response)
     if not decision.allowed:
         raise RateLimitExceededError(
-            f"Exceeded {decision.limit} authentication attempts per "
+            f"Exceeded {decision.limit} token exchanges per "
             f"{settings.auth_rate_limit_window_seconds} seconds.",
             headers=decision.headers(),
         )
