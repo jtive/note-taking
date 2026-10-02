@@ -2,35 +2,42 @@
 
 Developer only notes - 
 
-Retrospective & Tooling Choices
-In hindsight, sticking with Claude Opus throughout the assessment was a bottleneck. While I typically leverage Opus for high-level system design and architecture in my day-to-day work, its latency is ill-suited for a strict 3-hour constraint.
+## Retrospective & LLM Tooling Strategy
 
-A more effective model-routing strategy for this challenge would have been:
+In hindsight, relying exclusively on Claude Opus throughout the 3-hour implementation created an avoidable latency bottleneck. While I typically leverage Opus for greenfield architecture and complex domain design in standard environments, its response times are ill-suited for strict, timed constraints.
 
-Sonnet for initial planning and system architecture.
+A more effective model-routing split would have been:
+- **Claude Sonnet:** High-level system architecture, core interface design, and initial scaffolding.
+- **Claude Haiku:** High-velocity boilerplate generation, unit test coverage, and end-to-end test suites.
 
-Haiku for boilerplate, unit tests, and end-to-end scaffolding.
+Optimizing this workflow could have reclaimed approximately 30–45 minutes, enabling a cleaner target distribution of time:
+- **1 hr:** Architecture & core feature implementation
+- **1 hr:** Edge-case hardening & comprehensive testing
+- **30 mins:** Code review, dependency verification, and documentation
 
-Adopting that split likely would have shaved 30–45 minutes off implementation, allowing for a cleaner distribution of time:
+### Trade-offs & Implementation Decisions
+- **CI/CD Simplification:** Opus introduced unnecessary complexity into the deployment configuration, creating redundant triggers in GitHub Actions and overly expansive infra definitions. Given the hard time limit, priority was placed on verifying core functionality, reliability, and security over auditing every generated automation artifact.
+- **Verification vs. Polish:** Under a normal delivery cycle, every line of generated code and documentation undergoes a deep manual pass. Here, effort was concentrated on ensuring working end-to-end functionality within the allotted window.
 
-1 hour: Planning & core development
+---
 
-1 hour: Hardening, edge cases & comprehensive testing
+## Future Roadmap & Architecture Enhancements
 
-30 minutes: Documentation & targeted code review
+Given additional time, the following improvements would be prioritized:
 
-Opus also introduced friction during deployment and infrastructure setup—it overcomplicated the deployment architecture and introduced duplicate runs in the GitHub Actions workflows. Given the hard stop at 3 hours, my priority shifted from line-by-line stylistic audits to verifying core functionality, security, and stability.
+### 1. Dedicated Test Harness
+- Implement a lightweight React front end to serve as an interactive test harness for rapid, targeted end-to-end verification alongside automated suites.
 
-Next Steps & Future Enhancements
-If allocated additional time, I would prioritize the following architectural improvements:
+### 2. Identity, Multi-Tenancy & Scoped Permissions
+- Decouple authentication from static organizational boundaries to support true per-user identities.
+- Introduce dynamic team memberships and granular permission scopes, allowing controlled cross-team visibility for notes and shared artifacts.
 
-Frontend Test Harness: Build a lightweight React UI for rapid, targeted end-to-end verification beyond automated integration tests.
+### 3. Database Migration (NoSQL $\rightarrow$ PostgreSQL)
+- While a document/NoSQL store was functional for initial prototyping, cross-team relational scoping, access rules, and linked entities introduce unnecessary data-modeling friction.
+- Transitioning to a normalized PostgreSQL schema would simplify relational queries, reinforce transactional integrity, and streamline indexing.
 
-Auth & Multi-Tenancy Scoping: Decouple authentication from static team structures to support per-user identities, dynamic team memberships, and cross-team read/write scopes.
-
-Database Re-architecture: The current relational requirements (cross-team permissions, note associations, threading) push against the strengths of a document/NoSQL store. I would migrate this to a structured PostgreSQL schema to simplify relational querying, data integrity, and indexing.
-
-Threaded Associations: Evolve the core note model into a threaded/hierarchical pattern, allowing users to link notes directly to existing discussions or cross-functional records.
+### 4. Threading & Associative Notes
+- Evolve the flat note schema into a hierarchical/threaded model, enabling users to nest discussions, cross-reference entries, and associate notes across teams.
 
 If you hammer this API too hard, there is an API gateway kill switch. I need to to save money. But if you trigger the 
 kill switch I can redeploy the API for more testing just send me an email. 
