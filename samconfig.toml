@@ -16,8 +16,11 @@ region = "us-east-2"
 # resource creation. No CAPABILITY_NAMED_IAM: nothing here names a role, so
 # CloudFormation can replace them safely.
 capabilities = "CAPABILITY_IAM"
-# Let SAM manage the artifact bucket rather than requiring one to exist first.
-resolve_s3 = true
+# No resolve_s3: that would have SAM create its own managed bucket through a
+# second CloudFormation stack, which the deploy role is not permitted to touch.
+# The workflow passes --s3-bucket instead, pointing at the bucket the bootstrap
+# stack created. The useful side effect is that a stray local `sam deploy`
+# fails asking for a bucket rather than quietly shipping to production.
 confirm_changeset = false
 # A deploy with no changes is a successful no-op, not a failed pipeline.
 fail_on_empty_changeset = false

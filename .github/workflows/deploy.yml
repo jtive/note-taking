@@ -1,0 +1,98 @@
+name: Deploy
+
+# Deploys only ever happen from here. No AWS access key exists in GitHub: the
+# job trades a signed GitHub OIDC token for one-hour STS credentials, and the
+# role's trust policy only accepts tokens whose subject is this repository's
+# main branch (see infra/bootstrap-oidc.yaml).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Read-only by default. `id-token: write` is what lets the job request an OIDC
+# token - it grants no AWS access by itself, only the ability to ask for the
+# assertion the role will evaluate.
+permissions:
+  contents: read
+  id-token: write
+
+# Queued rather than cancelled: interrupting a CloudFormation deploy leaves a
+# stack mid-update, which needs manual recovery.
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  # Reused rather than duplicated, so a deploy physically cannot run without
+  # the lint, type and test gates having passed on the same commit.
+  checks:
+    name: Checks
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    name: Build and deploy
+    needs: checks
+    runs-on: ubuntu-latest
+    # Point a GitHub environment at this name to add a required reviewer or
+    # restrict which branches may deploy.
+    environment: prod
+    outputs:
+      api-url: ${{ steps.outputs.outputs.api-url }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+
+      - name: Install AWS SAM CLI
+        run: pipx install aws-sam-cli==1.166.2
+
+      - name: Assume the deploy role
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: gha-${{ github.run_id }}
+
+      - name: Build
+        # Not --use-container: the runner is already the same Linux and
+        # architecture as the Lambda runtime, and the dependencies are pure
+        # Python, so a container would only add minutes.
+        run: sam build
+
+      - name: Deploy
+        run: >-
+          sam deploy
+          --no-confirm-changeset
+          --no-fail-on-empty-changeset
+          --s3-bucket ${{ vars.SAM_ARTIFACT_BUCKET }}
+
+      - name: Read the stack outputs
+        id: outputs
+        run: |
+          url=$(aws cloudformation describe-stacks \
+            --stack-name note-taking-prod \
+            --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue" \
+            --output text)
+          echo "api-url=${url}" >> "$GITHUB_OUTPUT"
+          echo "Deployed to ${url}"
+
+      - name: Smoke test
+        # A green deploy only means CloudFormation was happy. This exercises
+        # the live URL so a broken handler path or a missing IAM grant fails
+        # the run instead of waiting to be discovered by a caller.
+        run: python scripts/smoke_test.py "${{ steps.outputs.outputs.api-url }}"
+        env:
+          NOTES_SMOKE_API_TOKEN: ${{ secrets.NOTES_SMOKE_API_TOKEN }}
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "### Deploy"
+            echo
+            echo "- Commit: \`${{ github.sha }}\`"
+            echo "- API: ${{ steps.outputs.outputs.api-url }}"
+          } >> "$GITHUB_STEP_SUMMARY"
