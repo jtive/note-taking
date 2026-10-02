@@ -4,7 +4,7 @@ Developer only notes -
 
 ## Retrospective & LLM Tooling Strategy
 
-In hindsight, relying exclusively on Claude Opus throughout the 3-hour implementation created an avoidable latency bottleneck. While I typically leverage Opus for greenfield architecture and complex domain design in standard environments, its response times are ill-suited for strict, timed constraints.
+In hindsight, relying exclusively on Claude Opus throughout the 3-hour implementation created an avoidable latency bottleneck. While I typically leverage Opus for greenfield architecture and complex domain design at my current employment, its response times are ill-suited for strict, timed constraints. This was all generated from my person AI license. 
 
 A more effective model-routing split would have been:
 - **Claude Sonnet:** High-level system architecture, core interface design, and initial scaffolding.
@@ -14,6 +14,7 @@ Optimizing this workflow could have reclaimed approximately 30–45 minutes, ena
 - **1 hr:** Architecture & core feature implementation
 - **1 hr:** Edge-case hardening & comprehensive testing
 - **30 mins:** Code review, dependency verification, and documentation
+- **30 mins:** Cost analysis - ensuring that the API costs cannot sky rocket. 
 
 ### Trade-offs & Implementation Decisions
 - **CI/CD Simplification:** Opus introduced unnecessary complexity into the deployment configuration, creating redundant triggers in GitHub Actions and overly expansive infra definitions. Given the hard time limit, priority was placed on verifying core functionality, reliability, and security over auditing every generated automation artifact.
