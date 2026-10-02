@@ -435,6 +435,13 @@ consequences of choices rather than oversights.
   like any other, so a retry storm still costs roughly one write unit per
   refusal. Rejecting at the edge is cheaper, but the edge cannot do per-team
   accounting — which is exactly why both tiers exist.
+- **Validation errors do not quote the offending value.** Pydantic attaches the
+  failing `input` to every error, and for a *missing* field that input is the
+  entire request body — which on `POST /auth/token` contains a live API token.
+  The handler strips it, so a `422` tells you which field failed and why, but
+  not what you sent. Marginally worse to debug against; no credential ever
+  reflected into a response body, a proxy log or an error tracker.
+  `tests/test_secret_reflection.py` pins it.
 - **One partition per team** — see the ceiling discussed above.
 
 ---

@@ -132,10 +132,29 @@ async def handle_api_error(request: Request, exc: ApiError) -> JSONResponse:
     return _problem_response(exc, request)
 
 
+def _without_submitted_values(errors: list[Any]) -> list[dict[str, Any]]:
+    """Strip the offending `input` from each validation error.
+
+    Pydantic attaches the value that failed to every error, and for a *missing
+    field* it reports the whole parent object as that value - which on
+    POST /auth/token is the caller's API token. Echoing it would put a live
+    credential in a response body, where it can reach a proxy log, a browser
+    console or an error tracker.
+
+    The caller already has whatever it sent, so `loc`, `msg` and `type` are
+    enough to say what was wrong without reflecting anything back.
+    """
+    return [
+        {key: value for key, value in error.items() if key != "input"}
+        for error in errors
+        if isinstance(error, dict)
+    ]
+
+
 async def handle_request_validation(request: Request, exc: RequestValidationError) -> JSONResponse:
     error = ValidationError(
         "The request body or parameters failed validation.",
-        errors=jsonable_encoder(exc.errors()),
+        errors=_without_submitted_values(jsonable_encoder(exc.errors())),
     )
     return _problem_response(error, request)
 

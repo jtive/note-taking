@@ -49,6 +49,17 @@ jobs:
         # suite currently sits near 98 percent.
         run: pytest --cov --cov-report=term-missing --cov-fail-under=90
 
+      - name: Audit dependencies
+        # Installed in isolation so resolving the auditor cannot perturb the
+        # pinned versions it is meant to be auditing. Runs against the
+        # requirements files rather than the environment, so a vulnerability in
+        # a runtime dependency fails the build even though the runtime
+        # dependencies are not installed here.
+        run: |
+          pipx install pip-audit==2.10.1
+          pip-audit -r src/requirements.txt
+          pip-audit -r requirements-dev.txt
+
   template:
     name: Validate the SAM template
     runs-on: ubuntu-latest

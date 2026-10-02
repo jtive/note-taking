@@ -38,7 +38,9 @@ def api_gateway_event(
             "content-type": "application/json",
         },
         "requestContext": {
-            "accountId": "486151888818",
+            # AWS's documentation account id. The real one is not a secret, but
+            # it identifies a target and this repository is public.
+            "accountId": "123456789012",
             "apiId": "abc123",
             "domainName": "notes.example.com",
             "http": {
@@ -63,7 +65,7 @@ def context() -> SimpleNamespace:
     return SimpleNamespace(
         function_name="notes-api",
         memory_limit_in_mb=512,
-        invoked_function_arn="arn:aws:lambda:us-east-2:486151888818:function:notes-api",
+        invoked_function_arn="arn:aws:lambda:us-east-2:123456789012:function:notes-api",
         aws_request_id="test-request-id",
     )
 
