@@ -1,0 +1,14 @@
+# Runtime dependencies. Consumed by `sam build` (CodeUri points at src/).
+#
+# Pinned exactly so the artifact CI uploads is the artifact that was tested.
+# boto3/botocore are deliberately absent: the Lambda Python runtime ships them,
+# and bundling ~15MB of SDK we only use for DynamoDB and SSM would slow cold
+# starts for no benefit. requirements-dev.txt pins them for local and test runs.
+fastapi==0.142.2
+mangum==0.22.0
+pydantic==2.13.5
+pydantic-settings==2.15.0
+email-validator==2.3.0
+PyJWT==2.15.1
+bcrypt==5.0.0
+python-ulid==4.0.1

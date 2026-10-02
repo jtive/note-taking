@@ -1,0 +1,13 @@
+-r src/requirements.txt
+
+# boto3 is provided by the Lambda runtime in production, so it is a dev
+# dependency here rather than a bundled one. See src/requirements.txt.
+boto3==1.43.108
+
+pytest==9.1.1
+pytest-cov==7.1.0
+moto[dynamodb,ssm]==5.2.3
+# Starlette's TestClient requires httpx2; the original httpx is deprecated there.
+httpx2==2.13.1
+ruff==0.16.10
+mypy==2.4.0

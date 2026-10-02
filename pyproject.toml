@@ -1,0 +1,55 @@
+# Tool configuration only. Runtime dependencies live in src/requirements.txt
+# because that is the file `sam build` reads; keeping a second copy here would
+# only create an opportunity for the two to drift.
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q --strict-markers --strict-config"
+filterwarnings = ["error"]
+
+[tool.coverage.run]
+source = ["notes"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:", "raise NotImplementedError"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # bugbear
+    "UP",   # pyupgrade
+    "S",    # bandit
+    "C4",   # comprehensions
+    "SIM",  # simplify
+    "RUF",
+]
+ignore = [
+    "B008",  # FastAPI's Depends() in defaults is the documented idiom
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert on hardcoded credentials and use assert statements by design.
+"tests/*" = ["S101", "S105", "S106"]
+"scripts/*" = ["S101"]
+
+[tool.mypy]
+python_version = "3.12"
+mypy_path = "src"
+packages = ["notes"]
+strict = true
+warn_unreachable = true
+# boto3 is untyped unless boto3-stubs is installed; we keep the dependency
+# surface small and accept Any at the SDK boundary instead.
+ignore_missing_imports = true
+disallow_untyped_decorators = false
