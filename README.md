@@ -45,11 +45,11 @@ Given additional time, the following improvements would be prioritized:
 ### 4. Threading & Associative Notes
 - Evolve the flat note schema into a hierarchical/threaded model, enabling users to nest discussions, cross-reference entries, and associate notes across teams.
 
-If you hammer this API too hard, there is an API gateway kill switch. I need to to save money. But if you trigger the 
+### 4. Reviewer Testing Notes
+- If you hammer this API too hard, there is an API gateway kill switch. I need to to save money. But if you trigger the 
 kill switch I can redeploy the API for more testing just send me an email. 
 
-Beneath this line is all AI generated Readme code. Above this line is all 
-the developer notes.
+### Beneath this line is all AI generated Readme code. Above this line is all the developer notes.
 _______________________________________________________________________________
 
 A REST service for small teams to capture and work with shared notes. Python,
